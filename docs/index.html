@@ -3,182 +3,810 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>giter</title>
+    <title>giter — フォルダの変更を、かんたんに記録</title>
+    <meta
+      name="description"
+      content="Git の知識は要りません。フォルダの変更を好きなタイミングで保存して、いつでも以前の状態に戻せるデスクトップアプリ。"
+    />
     <style>
       :root {
-        --bg: #ffffff;
-        --bg-alt: #f5f5f7;
-        --border: #d9d9df;
-        --text: #1b1b1f;
-        --text-muted: #6b6b76;
-        --accent: #2f6fed;
+        --bg: #fbfbfd;
+        --surface: #ffffff;
+        --surface-2: #f2f2f7;
+        --border: #e3e3ea;
+        --text: #16161a;
+        --text-muted: #61616b;
+        --accent: #4f46e5;
+        --accent-2: #0ea5e9;
+        --accent-soft: #eef0ff;
+        --on-accent: #ffffff;
+        --new-bg: #dcf6e3;
+        --new-fg: #17622b;
+        --mod-bg: #ffecd0;
+        --mod-fg: #8f4b00;
+        --folder: #5aa9f0;
+        --shadow: 0 1px 2px rgb(20 20 40 / 0.05), 0 12px 40px rgb(30 30 80 / 0.12);
+        --radius: 16px;
         color-scheme: light dark;
       }
       @media (prefers-color-scheme: dark) {
         :root {
-          --bg: #1b1b1f;
-          --bg-alt: #242429;
-          --border: #35353c;
-          --text: #f0f0f2;
-          --text-muted: #9a9aa5;
-          --accent: #5b8dfd;
+          --bg: #0d0d11;
+          --surface: #17171d;
+          --surface-2: #1f1f27;
+          --border: #2c2c36;
+          --text: #f3f3f6;
+          --text-muted: #a2a2ae;
+          --accent: #8b87ff;
+          --accent-2: #38bdf8;
+          --accent-soft: #1f1f3a;
+          --on-accent: #0d0d11;
+          --new-bg: #173a22;
+          --new-fg: #7fe09a;
+          --mod-bg: #43301a;
+          --mod-fg: #ffbb66;
+          --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 16px 48px rgb(0 0 0 / 0.5);
         }
       }
       * {
         box-sizing: border-box;
       }
+      html {
+        scroll-behavior: smooth;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+        * {
+          transition: none !important;
+        }
+      }
       body {
         margin: 0;
         background: var(--bg);
         color: var(--text);
-        font-family:
-          -apple-system,
-          BlinkMacSystemFont,
-          'Segoe UI',
-          Roboto,
-          sans-serif;
-        line-height: 1.6;
+        font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Yu Gothic UI', 'Segoe UI', Roboto, sans-serif;
+        line-height: 1.7;
+        -webkit-font-smoothing: antialiased;
+        /* 日本語を文節の途中で折り返さない(未対応のブラウザでは通常の折り返し) */
+        word-break: auto-phrase;
+        text-wrap: pretty;
       }
-      main {
-        max-width: 720px;
-        margin: 0 auto;
-        padding: 48px 20px 80px;
-      }
-      h1 {
-        font-size: 28px;
-        margin-bottom: 4px;
-      }
-      .subtitle {
-        color: var(--text-muted);
-        margin-top: 0;
-        margin-bottom: 32px;
-      }
-      .download-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 16px;
-        margin-bottom: 16px;
-      }
-      .download-card {
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        padding: 24px;
-        background: var(--bg-alt);
-        display: flex;
-        flex-direction: column;
-      }
-      .download-card strong {
-        display: block;
-        margin-bottom: 4px;
-      }
-      .download-card .platform-sub {
-        font-size: 13px;
-        color: var(--text-muted);
-        margin-bottom: 12px;
-      }
-      .download-button {
-        display: inline-block;
-        background: var(--accent);
-        color: #fff;
-        text-decoration: none;
-        padding: 12px 20px;
-        border-radius: 8px;
-        font-weight: 600;
-        text-align: center;
-        margin-top: auto;
-      }
-      .meta {
-        font-size: 13px;
-        color: var(--text-muted);
-        margin-top: 20px;
-      }
-      h2 {
-        font-size: 18px;
-        margin-top: 40px;
-      }
-      ul {
-        padding-left: 20px;
-      }
-      code {
-        background: var(--bg-alt);
-        padding: 2px 6px;
-        border-radius: 4px;
-        font-size: 0.9em;
-      }
-      footer {
-        margin-top: 48px;
-        font-size: 13px;
-        color: var(--text-muted);
+      h1,
+      h2,
+      h3 {
+        text-wrap: balance;
       }
       a {
         color: var(--accent);
       }
+      .wrap {
+        max-width: 1040px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+
+      /* ナビ */
+      nav {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        backdrop-filter: saturate(180%) blur(16px);
+        background: color-mix(in srgb, var(--bg) 78%, transparent);
+        border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+      }
+      nav .wrap {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 56px;
+      }
+      .brand {
+        font-weight: 700;
+        font-size: 18px;
+        letter-spacing: -0.01em;
+        color: var(--text);
+        text-decoration: none;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .brand svg {
+        width: 22px;
+        height: 22px;
+      }
+      nav ul {
+        display: flex;
+        gap: 22px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        font-size: 14px;
+      }
+      nav ul a {
+        color: var(--text-muted);
+        text-decoration: none;
+      }
+      nav ul a:hover {
+        color: var(--text);
+      }
+
+      /* ヒーロー */
+      .hero {
+        position: relative;
+        overflow: hidden;
+        padding: 72px 0 40px;
+        text-align: center;
+      }
+      .hero::before {
+        content: '';
+        position: absolute;
+        inset: -20% -10% auto;
+        height: 520px;
+        background:
+          radial-gradient(520px 260px at 25% 30%, color-mix(in srgb, var(--accent) 26%, transparent), transparent 70%),
+          radial-gradient(520px 260px at 75% 20%, color-mix(in srgb, var(--accent-2) 24%, transparent), transparent 70%);
+        z-index: -1;
+      }
+      .pill {
+        display: inline-block;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--accent);
+        background: var(--accent-soft);
+        padding: 4px 14px;
+        border-radius: 999px;
+        margin-bottom: 20px;
+      }
+      h1 {
+        font-size: clamp(34px, 6vw, 62px);
+        line-height: 1.15;
+        letter-spacing: -0.03em;
+        margin: 0 auto 18px;
+        max-width: 14em;
+      }
+      h1 span {
+        display: block;
+        white-space: nowrap;
+        background: linear-gradient(100deg, var(--accent), var(--accent-2));
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .lead {
+        font-size: clamp(16px, 2vw, 19px);
+        color: var(--text-muted);
+        max-width: 36em;
+        margin: 0 auto 32px;
+      }
+      .cta {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 12px;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 13px 26px;
+        border-radius: 999px;
+        font-weight: 600;
+        font-size: 16px;
+        text-decoration: none;
+        transition: transform 0.15s, box-shadow 0.15s;
+      }
+      .btn:hover {
+        transform: translateY(-1px);
+      }
+      .btn:focus-visible {
+        outline: 3px solid color-mix(in srgb, var(--accent) 50%, transparent);
+        outline-offset: 2px;
+      }
+      .btn.primary {
+        background: linear-gradient(100deg, var(--accent), var(--accent-2));
+        color: var(--on-accent);
+        box-shadow: 0 8px 24px color-mix(in srgb, var(--accent) 38%, transparent);
+      }
+      .btn.ghost {
+        background: var(--surface);
+        color: var(--text);
+        border: 1px solid var(--border);
+      }
+      .hero-note {
+        margin-top: 14px;
+        font-size: 13px;
+        color: var(--text-muted);
+      }
+
+      /* アプリ画面のモックアップ */
+      .mock {
+        margin: 56px auto 0;
+        max-width: 880px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        text-align: left;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .mock-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        background: var(--surface-2);
+        border-bottom: 1px solid var(--border);
+      }
+      .dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+      }
+      .dot:nth-child(1) {
+        background: #ff5f57;
+      }
+      .dot:nth-child(2) {
+        background: #febc2e;
+      }
+      .dot:nth-child(3) {
+        background: #28c840;
+      }
+      .mock-title {
+        margin-left: 10px;
+        color: var(--text-muted);
+      }
+      .mock-save {
+        margin-left: auto;
+        background: var(--accent);
+        color: var(--on-accent);
+        border-radius: 7px;
+        padding: 2px 12px;
+        font-weight: 600;
+      }
+      .mock-save b {
+        background: var(--on-accent);
+        color: var(--accent);
+        border-radius: 9px;
+        padding: 0 6px;
+        margin-left: 6px;
+        font-size: 11px;
+      }
+      .mock-body {
+        display: grid;
+        grid-template-columns: 150px 1fr 220px;
+        min-height: 270px;
+      }
+      .mock-side {
+        background: var(--surface-2);
+        border-right: 1px solid var(--border);
+        padding: 14px 10px;
+        color: var(--text-muted);
+      }
+      .mock-side h4 {
+        margin: 0 0 8px 6px;
+        font-size: 11px;
+        font-weight: 600;
+      }
+      .mock-side div {
+        padding: 4px 8px;
+        border-radius: 6px;
+        color: var(--text);
+      }
+      .mock-side div.on {
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-weight: 600;
+      }
+      .mock-list {
+        padding: 6px 0;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 1fr 76px 96px;
+        gap: 8px;
+        align-items: center;
+        padding: 7px 16px;
+      }
+      .row.head {
+        color: var(--text-muted);
+        font-size: 12px;
+        border-bottom: 1px solid var(--border);
+      }
+      .row.sel {
+        background: var(--accent);
+        color: var(--on-accent);
+        border-radius: 8px;
+        margin: 0 8px;
+        padding: 7px 8px;
+      }
+      .name {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .ico {
+        width: 16px;
+        height: 18px;
+        border-radius: 3px;
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        flex: none;
+      }
+      .ico.dir {
+        background: var(--folder);
+        border: 0;
+        height: 14px;
+        border-radius: 4px;
+      }
+      .badge {
+        font-size: 11px;
+        padding: 1px 8px;
+        border-radius: 9px;
+        justify-self: start;
+      }
+      .badge.new {
+        background: var(--new-bg);
+        color: var(--new-fg);
+      }
+      .badge.mod {
+        background: var(--mod-bg);
+        color: var(--mod-fg);
+      }
+      .muted {
+        color: var(--text-muted);
+      }
+      .sel .muted {
+        color: inherit;
+        opacity: 0.85;
+      }
+      .mock-hist {
+        border-left: 1px solid var(--border);
+        padding: 14px 12px;
+        background: var(--surface-2);
+      }
+      .mock-hist h4 {
+        margin: 0 0 10px;
+        font-size: 12px;
+      }
+      .ver {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 8px 10px;
+        margin-bottom: 8px;
+      }
+      .ver small {
+        color: var(--text-muted);
+      }
+      .ver .btn-s {
+        display: inline-block;
+        margin-top: 4px;
+        font-size: 11px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 1px 8px;
+      }
+
+      /* セクション */
+      section {
+        padding: 88px 0 0;
+      }
+      .eyebrow {
+        color: var(--accent);
+        font-weight: 700;
+        font-size: 13px;
+        letter-spacing: 0.08em;
+      }
+      h2 {
+        font-size: clamp(26px, 4vw, 38px);
+        letter-spacing: -0.02em;
+        line-height: 1.25;
+        margin: 6px 0 32px;
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+      }
+      @media (max-width: 900px) {
+        .cards {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+      @media (max-width: 560px) {
+        .cards {
+          grid-template-columns: 1fr;
+        }
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 24px;
+      }
+      .card .icon {
+        width: 44px;
+        height: 44px;
+        display: grid;
+        place-content: center;
+        border-radius: 12px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        margin-bottom: 14px;
+      }
+      .card .icon svg {
+        width: 22px;
+        height: 22px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .card h3 {
+        margin: 0 0 6px;
+        font-size: 17px;
+      }
+      .card p {
+        margin: 0;
+        color: var(--text-muted);
+        font-size: 15px;
+      }
+      .steps {
+        counter-reset: step;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 16px;
+        padding: 0;
+        margin: 0;
+        list-style: none;
+      }
+      .steps li {
+        counter-increment: step;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 24px;
+      }
+      .steps li::before {
+        content: counter(step);
+        display: grid;
+        place-content: center;
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        background: linear-gradient(100deg, var(--accent), var(--accent-2));
+        color: var(--on-accent);
+        font-weight: 700;
+        margin-bottom: 12px;
+      }
+      .steps strong {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 17px;
+      }
+      .steps span {
+        color: var(--text-muted);
+        font-size: 15px;
+      }
+      kbd {
+        font: inherit;
+        font-size: 0.9em;
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-bottom-width: 2px;
+        border-radius: 6px;
+        padding: 0 6px;
+      }
+
+      /* ダウンロード */
+      .dl {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 16px;
+      }
+      .dl-card {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 24px;
+      }
+      .dl-card.rec {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+      }
+      .dl-card.rec::after {
+        content: 'お使いの環境';
+        position: absolute;
+        top: -11px;
+        right: 18px;
+        font-size: 11px;
+        font-weight: 700;
+        background: var(--accent);
+        color: var(--on-accent);
+        padding: 2px 10px;
+        border-radius: 999px;
+      }
+      .dl-card h3 {
+        margin: 0;
+        font-size: 20px;
+      }
+      .dl-card .sub {
+        color: var(--text-muted);
+        font-size: 14px;
+        margin-bottom: 18px;
+      }
+      .dl-card .btn {
+        margin-top: auto;
+        justify-content: center;
+        padding: 11px 18px;
+        font-size: 15px;
+        background: var(--text);
+        color: var(--bg);
+      }
+      .dl-card.rec .btn {
+        background: linear-gradient(100deg, var(--accent), var(--accent-2));
+        color: var(--on-accent);
+      }
+      .meta {
+        margin-top: 20px;
+        font-size: 14px;
+        color: var(--text-muted);
+      }
+      details {
+        margin-top: 24px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 4px 22px;
+      }
+      summary {
+        cursor: pointer;
+        font-weight: 600;
+        padding: 14px 0;
+      }
+      details ul {
+        margin: 0 0 14px;
+        padding-left: 20px;
+        color: var(--text-muted);
+      }
+      code {
+        background: var(--surface-2);
+        padding: 1px 6px;
+        border-radius: 5px;
+        font-size: 0.9em;
+      }
+      footer {
+        margin-top: 96px;
+        padding: 28px 0 48px;
+        border-top: 1px solid var(--border);
+        font-size: 14px;
+        color: var(--text-muted);
+      }
+      footer .wrap {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 24px;
+        justify-content: space-between;
+      }
+
+      @media (max-width: 760px) {
+        nav ul {
+          display: none;
+        }
+        .mock-body {
+          grid-template-columns: 1fr;
+        }
+        .mock-side,
+        .mock-hist {
+          display: none;
+        }
+        .hero {
+          padding-top: 48px;
+        }
+        section {
+          padding-top: 64px;
+        }
+      }
     </style>
   </head>
   <body>
-    <main>
-      <h1>giter</h1>
-      <p class="subtitle">フォルダの変更を、かんたんに記録して、いつでも以前の状態に戻せるバージョン管理アプリ。Git の知識は要りません。</p>
+    <nav>
+      <div class="wrap">
+        <a class="brand" href="#top">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <defs>
+              <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#4f46e5" />
+                <stop offset="1" stop-color="#0ea5e9" />
+              </linearGradient>
+            </defs>
+            <rect width="24" height="24" rx="6" fill="url(#g)" />
+            <path d="M7 12.5l3.2 3.2L17 8.8" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          giter
+        </a>
+        <ul>
+          <li><a href="#features">特長</a></li>
+          <li><a href="#how">使い方</a></li>
+          <li><a href="#download">ダウンロード</a></li>
+          <li><a href="https://github.com/7thCode/giter">GitHub</a></li>
+        </ul>
+      </div>
+    </nav>
 
-      <p><strong>最新版: v0.1.0</strong></p>
-      <div class="download-grid">
-        <div class="download-card">
-          <strong>macOS</strong>
-          <span class="platform-sub">Apple Silicon / Intel (Universal)</span>
-          <a
-            class="download-button"
-            href="https://github.com/7thCode/giter/releases/download/v0.1.0/giter_0.1.0_universal.dmg"
-          >
-            .dmg をダウンロード
-          </a>
+    <header class="hero" id="top">
+      <div class="wrap">
+        <span class="pill">Git の知識は要りません</span>
+        <h1>フォルダの変更を、<span>かんたんに記録。</span></h1>
+        <p class="lead">
+          好きなタイミングで「保存」を押すだけ。以前の状態にいつでも戻せる、<span style="white-space: nowrap">Finder のように</span>使えるバージョン管理アプリです。
+        </p>
+        <div class="cta">
+          <a class="btn primary" id="hero-dl" href="#download">ダウンロード</a>
+          <a class="btn ghost" href="https://github.com/7thCode/giter">GitHub で見る</a>
         </div>
-        <div class="download-card">
-          <strong>Windows</strong>
-          <span class="platform-sub">64bit (x64)</span>
-          <a
-            class="download-button"
-            href="https://github.com/7thCode/giter/releases/download/v0.1.0/giter_0.1.0_x64-setup.exe"
-          >
-            .exe をダウンロード
-          </a>
-        </div>
-        <div class="download-card">
-          <strong>Linux</strong>
-          <span class="platform-sub">AppImage / 64bit (x64)</span>
-          <a
-            class="download-button"
-            href="https://github.com/7thCode/giter/releases/download/v0.1.0/giter_0.1.0_amd64.AppImage"
-          >
-            .AppImage をダウンロード
-          </a>
+        <p class="hero-note" id="hero-note">v0.1.0 · macOS / Windows / Linux · 無料</p>
+
+        <div class="mock" aria-hidden="true">
+          <div class="mock-bar">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            <span class="mock-title">見積書フォルダ</span>
+            <span class="mock-save">保存<b>2</b></span>
+          </div>
+          <div class="mock-body">
+            <div class="mock-side">
+              <h4>管理中のフォルダ</h4>
+              <div class="on">見積書フォルダ</div>
+              <div>写真</div>
+              <div>企画書</div>
+            </div>
+            <div class="mock-list">
+              <div class="row head"><span>名前</span><span>状態</span><span>更新日</span></div>
+              <div class="row"><span class="name"><i class="ico dir"></i>請求書</span><span></span><span class="muted">10月 28日</span></div>
+              <div class="row sel"><span class="name"><i class="ico"></i>提案書.pdf</span><span class="badge mod">変更あり</span><span class="muted">今日 10:42</span></div>
+              <div class="row"><span class="name"><i class="ico"></i>見積書.xlsx</span><span></span><span class="muted">10月 27日</span></div>
+              <div class="row"><span class="name"><i class="ico"></i>メモ.txt</span><span class="badge new">新規</span><span class="muted">今日 10:40</span></div>
+            </div>
+            <div class="mock-hist">
+              <h4>履歴 — 提案書.pdf</h4>
+              <div class="ver"><small>今日 9:15 · 最新</small><div>金額を修正</div></div>
+              <div class="ver"><small>10月 27日 17:30</small><div>初稿</div><span class="btn-s">この時点に戻す</span></div>
+            </div>
+          </div>
         </div>
       </div>
-      <p class="meta">
-        過去のリリース一覧は <a href="https://github.com/7thCode/giter/releases">Releases</a> から確認できます。
-      </p>
+    </header>
 
-      <h2>主な機能</h2>
-      <ul>
-        <li>Finder のようなフォルダ表示(リスト / アイコン)で、変更のあるファイルに「新規」「変更あり」の印を表示</li>
-        <li>ファイルをドロップして追加(コピー)、ドラッグして取り出し</li>
-        <li>「保存」ボタンまたは <code>⌘S</code> で、好きなタイミングにメモ付きで保存</li>
-        <li>履歴から、ファイルやフォルダを以前の状態に戻す(戻す前の内容も失われません)</li>
-        <li>インターネット不要。すべてこの Mac / PC の中で完結します</li>
-      </ul>
+    <main>
+      <section id="features">
+        <div class="wrap">
+          <div class="eyebrow">特長</div>
+          <h2>むずかしい言葉は、ひとつも出てきません。</h2>
+          <div class="cards">
+            <div class="card">
+              <div class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z" /></svg></div>
+              <h3>Finder のような見た目</h3>
+              <p>リストとアイコンで表示。変更のあるファイルには「新規」「変更あり」の印が付きます。</p>
+            </div>
+            <div class="card">
+              <div class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" /></svg></div>
+              <h3>ドロップとドラッグ</h3>
+              <p>ファイルをドロップして追加(元は残ります)。ドラッグして取り出すこともできます。</p>
+            </div>
+            <div class="card">
+              <div class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><path d="m22 4-10 10.01-3-3" /></svg></div>
+              <h3>好きなタイミングで保存</h3>
+              <p>自動では保存しません。メモ付きで、区切りのよいところで残せます。</p>
+            </div>
+            <div class="card">
+              <div class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg></div>
+              <h3>安心して戻せる</h3>
+              <p>戻す前の内容も失われません。過去の版を Finder へドラッグして取り出すこともできます。</p>
+            </div>
+            <div class="card">
+              <div class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg></div>
+              <h3>すべて手元で完結</h3>
+              <p>インターネット不要。アカウント登録も要らず、ファイルは外に送られません。</p>
+            </div>
+            <div class="card">
+              <div class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z" /></svg></div>
+              <h3>軽くて小さい</h3>
+              <p>Tauri 製のネイティブアプリ。Git のインストールも不要です。</p>
+            </div>
+          </div>
+        </div>
+      </section>
 
-      <h2>初めて開くとき</h2>
-      <ul>
-        <li>macOS: 開発元が未署名のため、初回は Finder でアプリを右クリックして「開く」を選んでください。</li>
-        <li>Windows: SmartScreen の警告が出たら「詳細情報」→「実行」を選んでください。</li>
-        <li>Linux: ダウンロードしたファイルに実行権限を付けて起動してください(<code>chmod +x</code>)。</li>
-      </ul>
+      <section id="how">
+        <div class="wrap">
+          <div class="eyebrow">使い方</div>
+          <h2>3 ステップで始められます。</h2>
+          <ol class="steps">
+            <li>
+              <strong>フォルダを選ぶ</strong>
+              <span>管理したいフォルダを選びます。中のファイルは変更されません。</span>
+            </li>
+            <li>
+              <strong>いつも通り作業して保存</strong>
+              <span>区切りのよいところで <kbd>⌘S</kbd>(Windows は <kbd>Ctrl</kbd>+<kbd>S</kbd>)。メモは省略できます。</span>
+            </li>
+            <li>
+              <strong>必要なら、以前の状態に戻す</strong>
+              <span>履歴から選んで「この時点に戻す」。戻す前の内容も履歴に残ります。</span>
+            </li>
+          </ol>
+        </div>
+      </section>
 
-      <h2>ソースコード</h2>
-      <p>
-        <a href="https://github.com/7thCode/giter">github.com/7thCode/giter</a>
-      </p>
-
-      <footer>Tauri 2 と Svelte 5 で作られています。</footer>
+      <section id="download">
+        <div class="wrap">
+          <div class="eyebrow">ダウンロード</div>
+          <h2>最新版 v0.1.0</h2>
+          <div class="dl">
+            <div class="dl-card" data-os="mac">
+              <h3>macOS</h3>
+              <div class="sub">Apple Silicon / Intel (Universal)</div>
+              <a class="btn" href="https://github.com/7thCode/giter/releases/download/v0.1.0/giter_0.1.0_universal.dmg">.dmg をダウンロード</a>
+            </div>
+            <div class="dl-card" data-os="win">
+              <h3>Windows</h3>
+              <div class="sub">64bit (x64)</div>
+              <a class="btn" href="https://github.com/7thCode/giter/releases/download/v0.1.0/giter_0.1.0_x64-setup.exe">.exe をダウンロード</a>
+            </div>
+            <div class="dl-card" data-os="linux">
+              <h3>Linux</h3>
+              <div class="sub">
+                64bit (x64) · Debian 系は
+                <a href="https://github.com/7thCode/giter/releases/download/v0.1.0/giter_0.1.0_amd64.deb">.deb</a>
+              </div>
+              <a class="btn" href="https://github.com/7thCode/giter/releases/download/v0.1.0/giter_0.1.0_amd64.AppImage">.AppImage をダウンロード</a>
+            </div>
+          </div>
+          <p class="meta">
+            過去のリリースは <a href="https://github.com/7thCode/giter/releases">Releases</a> から確認できます。
+          </p>
+          <details>
+            <summary>初めて開くときの注意(未署名のアプリです)</summary>
+            <ul>
+              <li>macOS: 初回は Finder でアプリを右クリックして「開く」を選んでください。</li>
+              <li>Windows: SmartScreen の警告が出たら「詳細情報」→「実行」を選んでください。</li>
+              <li>Linux: ダウンロードしたファイルに実行権限を付けて起動してください(<code>chmod +x</code>)。</li>
+            </ul>
+          </details>
+        </div>
+      </section>
     </main>
+
+    <footer>
+      <div class="wrap">
+        <span>Tauri 2 と Svelte 5 で作られています。</span>
+        <a href="https://github.com/7thCode/giter">github.com/7thCode/giter</a>
+      </div>
+    </footer>
+
+    <script>
+      // 閲覧中の OS に合うダウンロードを目立たせる(判定できなければ何もしない)
+      (function () {
+        var ua = navigator.userAgent || '';
+        var os = /Windows/i.test(ua) ? 'win' : /Mac/i.test(ua) && !/iPhone|iPad|iPod/i.test(ua) ? 'mac' : /Linux/i.test(ua) && !/Android/i.test(ua) ? 'linux' : '';
+        if (!os) return;
+        var card = document.querySelector('.dl-card[data-os="' + os + '"]');
+        if (!card) return;
+        card.classList.add('rec');
+        var names = { mac: 'macOS', win: 'Windows', linux: 'Linux' };
+        var hero = document.getElementById('hero-dl');
+        hero.href = card.querySelector('a.btn').href;
+        hero.textContent = names[os] + ' 版をダウンロード';
+        document.getElementById('hero-note').textContent = 'v0.1.0 · ' + names[os] + ' · 無料';
+      })();
+    </script>
   </body>
 </html>
