@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
   import { listen } from "@tauri-apps/api/event";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { ask, open } from "@tauri-apps/plugin-dialog";
   import { startDrag } from "@crabnebula/tauri-plugin-drag";
@@ -201,12 +202,19 @@
     if (!root) return;
     try {
       const saved = await api.saveNow(root, saveMessage);
-      say(saved ? "保存しました" : "変更はありません(自動保存済みです)");
+      say(saved ? "保存しました" : "保存する変更はありません");
       saveOpen = false;
       saveMessage = "";
       refresh();
     } catch (e) {
       say(errorMessage(e));
+    }
+  }
+
+  function onKeydown(event: KeyboardEvent) {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      if (root) saveOpen = true;
     }
   }
 
@@ -246,9 +254,32 @@
         }
       }),
     ];
+    // 未保存の変更があるまま閉じようとしたら確認する(ハンドラの完了までウィンドウは閉じない)
+    unlisten.push(
+      getCurrentWindow().onCloseRequested(async (event) => {
+        if (!root) return;
+        try {
+          if ((await api.pendingCount(root)) === 0) return;
+          const save = await ask("未保存の変更があります。保存してから閉じますか?", {
+            title: "終了する前に",
+            kind: "warning",
+            okLabel: "保存して閉じる",
+            cancelLabel: "閉じない",
+          });
+          if (!save) return event.preventDefault();
+          await api.saveNow(root, "終了時の保存");
+        } catch (e) {
+          // 確認できなかったときは閉じずに状況を見せる
+          event.preventDefault();
+          say(errorMessage(e));
+        }
+      }),
+    );
     return () => unlisten.forEach((u) => u.then((f) => f()));
   });
 </script>
+
+<svelte:window onkeydown={onKeydown} />
 
 <div class="app">
   <nav class="sidebar" aria-label="管理中のフォルダ">
@@ -314,12 +345,12 @@
 
       <footer class="statusbar">
         <span>{entries.length} 項目</span>
-        <span>{pending > 0 ? `未保存の変更 ${pending} 件(まもなく自動保存)` : "すべて保存済み"}</span>
+        <span>{pending > 0 ? `未保存の変更 ${pending} 件(⌘S で保存)` : "すべて保存済み"}</span>
       </footer>
     {:else}
       <div class="welcome">
         <h1>フォルダの変更を、かんたんに記録</h1>
-        <p>フォルダを選ぶと、ファイルの変更が自動で保存され、いつでも以前の状態に戻せます。</p>
+        <p>フォルダを選んで、区切りのよいところで「保存」を押すと、いつでもその時点に戻せます。</p>
         <button type="button" class="primary big" onclick={addFolder}>フォルダを選ぶ</button>
       </div>
     {/if}

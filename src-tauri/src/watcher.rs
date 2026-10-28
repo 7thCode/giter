@@ -1,4 +1,4 @@
-//! フォルダの変更を監視し、更新が落ち着いたら自動保存する。
+//! フォルダの変更を監視し、画面に更新を通知する。保存はユーザーの操作でのみ行う。
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;
@@ -8,10 +8,8 @@ use std::time::Duration;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher as _};
 use tauri::{AppHandle, Emitter};
 
-use crate::repo;
-
-/// 最後の変更からこの時間が経過したら自動保存する。
-const QUIET_PERIOD: Duration = Duration::from_millis(1500);
+/// 変更が続いている間は通知をまとめ、この時間静かになったらもう一度通知する。
+const QUIET_PERIOD: Duration = Duration::from_millis(500);
 
 /// 破棄すると監視が止まる(通知元の `RecommendedWatcher` が落ち、スレッドが終了する)。
 pub struct Watcher {
@@ -32,21 +30,12 @@ pub fn start(app: AppHandle, root: PathBuf) -> notify::Result<Watcher> {
 
     thread::spawn(move || {
         while let Ok(first) = rx.recv() {
-            let mut relevant = first.is_ok_and(|e| touches_worktree(&root, &e));
-            if relevant {
-                // 自動保存までの間も「変更あり」を表示できるよう、先に通知する
-                let _ = app.emit("repo-changed", ());
-            }
-            // 変更が続いている間は待つ
-            while let Ok(next) = rx.recv_timeout(QUIET_PERIOD) {
-                relevant |= next.is_ok_and(|e| touches_worktree(&root, &e));
-            }
-            if !relevant {
+            if !first.is_ok_and(|e| touches_worktree(&root, &e)) {
                 continue;
             }
-            if let Ok(repo) = repo::open_or_init(&root) {
-                let _ = repo::save(&repo, "自動保存");
-            }
+            let _ = app.emit("repo-changed", ());
+            // 変更が続いている間は待ち、落ち着いたら最終状態をもう一度通知する
+            while rx.recv_timeout(QUIET_PERIOD).is_ok() {}
             let _ = app.emit("repo-changed", ());
         }
     });
