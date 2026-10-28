@@ -105,6 +105,16 @@ fn workdir(repo: &Repository) -> Result<&Path> {
 
 /// すべての変更を保存する。変更がなければ `None`。
 pub fn save(repo: &Repository, message: &str) -> Result<Option<String>> {
+    commit_all(repo, message, false)
+}
+
+/// 今の内容と同じ版がすでに履歴にあれば保存しない(失う内容がないため)。
+/// 戻す前の安全保存に使い、戻した状態の再保存で履歴が増えるのを防ぐ。
+fn save_unless_known(repo: &Repository, message: &str) -> Result<Option<String>> {
+    commit_all(repo, message, true)
+}
+
+fn commit_all(repo: &Repository, message: &str, skip_if_known: bool) -> Result<Option<String>> {
     let mut index = repo.index()?;
     index.add_all(["*"].iter(), IndexAddOption::DEFAULT, None)?;
     index.update_all(["*"].iter(), None)?;
@@ -114,6 +124,15 @@ pub fn save(repo: &Repository, message: &str) -> Result<Option<String>> {
     let parent = head_commit(repo);
     if parent.as_ref().is_some_and(|p| p.tree_id() == tree_id) {
         return Ok(None);
+    }
+    if skip_if_known && parent.is_some() {
+        let mut walk = repo.revwalk()?;
+        walk.push_head()?;
+        for oid in walk {
+            if repo.find_commit(oid?)?.tree_id() == tree_id {
+                return Ok(None);
+            }
+        }
     }
     let tree = repo.find_tree(tree_id)?;
     let sig = signature(repo)?;
@@ -218,10 +237,11 @@ fn find_commit<'r>(repo: &'r Repository, id: &str) -> Result<Commit<'r>> {
 }
 
 /// 指定した時点に戻す。`rel` があればそのファイル/フォルダだけ、なければ全体。
-/// 戻す前に現在の状態を自動で保存し、戻した結果も新しい保存として残す(履歴は消さない)。
+/// 戻す前に未保存の変更があれば自動で保存する(履歴は消さない)。
+/// 戻した結果は保存しない。差分は「変更あり」として残り、保存するかはユーザーが決める。
 pub fn restore(repo: &Repository, id: &str, rel: Option<&str>) -> Result<()> {
     let target = find_commit(repo, id)?;
-    save(repo, "戻す前の自動保存")?;
+    save_unless_known(repo, "戻す前の自動保存")?;
     let tree = target.tree()?;
     let mut cb = CheckoutBuilder::new();
     cb.force();
@@ -237,12 +257,10 @@ pub fn restore(repo: &Repository, id: &str, rel: Option<&str>) -> Result<()> {
             } else if path.exists() {
                 fs::remove_file(&path)?;
             }
-            save(repo, &format!("{rel} を過去の状態に戻しました"))?;
         }
         None => {
             cb.remove_untracked(true);
             repo.checkout_tree(tree.as_object(), Some(&mut cb))?;
-            save(repo, "過去の状態に戻しました")?;
         }
     }
     Ok(())
@@ -432,7 +450,30 @@ mod tests {
         restore(&repo, &v1, None).unwrap();
         assert_eq!(fs::read_to_string(d.path().join("a.txt")).unwrap(), "1");
         assert!(!d.path().join("b.txt").exists());
-        assert_eq!(pending_count(&repo).unwrap(), 0);
+        // 戻した結果は保存されず、変更として残る
+        assert!(pending_count(&repo).unwrap() > 0);
+    }
+
+    #[test]
+    fn restore_does_not_add_revert_entries_to_history() {
+        let (d, repo) = setup();
+        write(&d, "a.txt", "1");
+        let v1 = save(&repo, "v1").unwrap().unwrap();
+        write(&d, "a.txt", "2");
+        save(&repo, "v2").unwrap();
+        let before = history(&repo, None).unwrap().len();
+
+        // 未保存の変更がなければ、戻しても履歴は増えない(全体・ファイル単位とも)
+        restore(&repo, &v1, None).unwrap();
+        restore(&repo, &v1, Some("a.txt")).unwrap();
+        assert_eq!(history(&repo, None).unwrap().len(), before);
+        assert_eq!(fs::read_to_string(d.path().join("a.txt")).unwrap(), "1");
+
+        // 保存するかはユーザー次第。保存して初めて履歴に載り、メッセージは指定したもの
+        save(&repo, "v1に戻した").unwrap();
+        let msgs: Vec<_> = history(&repo, None).unwrap().into_iter().map(|v| v.message).collect();
+        assert_eq!(msgs.len(), before + 1);
+        assert!(msgs.iter().all(|m| !m.contains("戻しました")), "{msgs:?}");
     }
 
     #[test]

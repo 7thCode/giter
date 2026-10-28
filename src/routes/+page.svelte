@@ -190,7 +190,7 @@
     if (!ok) return;
     try {
       await api.restore(root, version.id, scopeRel);
-      say("戻しました");
+      say("戻しました。内容を確認して「保存」で記録できます");
       refresh();
     } catch (e) {
       say(errorMessage(e));
