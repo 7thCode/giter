@@ -63,6 +63,13 @@ fn export_version(root: String, id: String, rel: String) -> Result<String> {
     Ok(path.to_string_lossy().to_string())
 }
 
+/// ファイルを既定のアプリで開く。
+#[tauri::command(async)]
+fn open_item(root: String, rel: String) -> Result<()> {
+    let path = repo::resolve(&repo::open_or_init(&PathBuf::from(root))?, &rel)?;
+    tauri_plugin_opener::open_path(path, None::<&str>).map_err(|e| Error(e.to_string()))
+}
+
 /// ドラッグ取り出し時に表示するアイコン(プラグインが画像ファイルのパスを要求する)。
 #[tauri::command(async)]
 fn drag_icon() -> Result<String> {
@@ -87,6 +94,7 @@ pub fn run() {
             restore,
             add_files,
             export_version,
+            open_item,
             drag_icon,
         ])
         .run(tauri::generate_context!())

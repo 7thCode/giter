@@ -12,9 +12,11 @@
   "app": {
     "windows": [
       {
-        "title": "giter-app",
-        "width": 800,
-        "height": 600
+        "title": "giter",
+        "width": 1040,
+        "height": 680,
+        "minWidth": 640,
+        "minHeight": 420
       }
     ],
     "security": {

@@ -221,7 +221,6 @@ fn find_commit<'r>(repo: &'r Repository, id: &str) -> Result<Commit<'r>> {
 /// 戻す前に現在の状態を自動で保存し、戻した結果も新しい保存として残す(履歴は消さない)。
 pub fn restore(repo: &Repository, id: &str, rel: Option<&str>) -> Result<()> {
     let target = find_commit(repo, id)?;
-    let when = target.time().seconds();
     save(repo, "戻す前の自動保存")?;
     let tree = target.tree()?;
     let mut cb = CheckoutBuilder::new();
@@ -238,15 +237,20 @@ pub fn restore(repo: &Repository, id: &str, rel: Option<&str>) -> Result<()> {
             } else if path.exists() {
                 fs::remove_file(&path)?;
             }
-            save(repo, &format!("{rel} を過去の状態({when})に戻しました"))?;
+            save(repo, &format!("{rel} を過去の状態に戻しました"))?;
         }
         None => {
             cb.remove_untracked(true);
             repo.checkout_tree(tree.as_object(), Some(&mut cb))?;
-            save(repo, &format!("過去の状態({when})に戻しました"))?;
+            save(repo, "過去の状態に戻しました")?;
         }
     }
     Ok(())
+}
+
+/// 管理フォルダ内の項目の絶対パス(外へ抜けるパスは拒否)。
+pub fn resolve(repo: &Repository, rel: &str) -> Result<PathBuf> {
+    safe_join(workdir(repo)?, rel)
 }
 
 /// 過去バージョンのファイルを一時フォルダに書き出し、そのパスを返す(Finder へのドラッグ用)。

@@ -33,6 +33,10 @@ pub fn start(app: AppHandle, root: PathBuf) -> notify::Result<Watcher> {
     thread::spawn(move || {
         while let Ok(first) = rx.recv() {
             let mut relevant = first.is_ok_and(|e| touches_worktree(&root, &e));
+            if relevant {
+                // 自動保存までの間も「変更あり」を表示できるよう、先に通知する
+                let _ = app.emit("repo-changed", ());
+            }
             // 変更が続いている間は待つ
             while let Ok(next) = rx.recv_timeout(QUIET_PERIOD) {
                 relevant |= next.is_ok_and(|e| touches_worktree(&root, &e));
