@@ -1,35 +1,57 @@
-# project-template
+# giter
 
-Template repository for new projects: multi-platform build via
-[actions-templates](https://github.com/7thCode/actions-templates), GitHub Release
-publishing on tag push, and a GitHub Pages download page.
+Git を使ったことがない人のための、シンプルなバージョン管理デスクトップアプリ。
+フォルダの変更を「保存」して、いつでも以前の状態に「戻す」ことができます。
+Tauri 2 + Svelte 5(SvelteKit)製。ローカルだけで動作します。
 
-## Using this template
+ダウンロード: [GitHub Pages](https://7thcode.github.io/giter/) / [Releases](https://github.com/7thCode/giter/releases)
+
+## できること
+
+- Finder のようなフォルダ表示(リスト / アイコン)。変更のあるファイルに「新規」「変更あり」を表示
+- ファイルをウィンドウへドロップして追加(元のファイルは残し、コピーする)
+- ファイルや過去の版を Finder などへドラッグして取り出し
+- 「保存」ボタンまたは `Cmd/Ctrl+S` で、メモ付きで保存(自動保存はしない)。未保存のまま閉じると確認を出す
+- 履歴から、ファイル / フォルダを以前の状態に戻す
+  - 戻した結果は保存しない(履歴に「戻した」という項目は作らない)。「変更あり」になるので、残したければ保存する
+  - 戻す前に未保存の変更があれば、失わないよう自動で1件保存する
+
+用語は Git と対応させています: 保存 = commit、戻す = checkout。操作はすべて、アプリに同梱の libgit2 で行うため、`git` コマンドのインストールは不要です。
+
+## 開発
+
+必要なもの: Node.js 22 以上、Rust(stable)、[Tauri の前提環境](https://v2.tauri.app/start/prerequisites/)
 
 ```bash
-gh repo create <new-repo> --template 7thCode/project-template --public
-cd <new-repo>
+npm ci
+npm run tauri dev      # 開発起動
+npm run check          # 型チェック
+npm test               # フロントエンドのテスト(vitest)
+cargo test --manifest-path src-tauri/Cargo.toml   # Git 操作のテスト
 ```
 
-Then:
+### 構成
 
-1. **Branch protection** — require PRs into `main`:
-   ```bash
-   scripts/setup-branch-protection.sh <owner>/<new-repo>
-   ```
-2. **GitHub Pages** — Settings → Pages → Source: Deploy from a branch →
-   `main` / `/docs`.
-3. **Fill in `docs/index.html`** — replace `PROJECT_NAME`, `PROJECT_DESCRIPTION`,
-   `OWNER/REPO`, version and download links, `FEATURE_*`, `FOOTER_TEXT`.
-4. **Adjust `.github/workflows/build.yml`** if the project isn't a plain
-   `npm ci && npm run build && electron-builder` app — override the reusable
-   workflow's `node_version` / `package_manager` / `build_command` /
-   `artifact_globs` inputs (see
-   [actions-templates README](https://github.com/7thCode/actions-templates)).
-5. **Tag a release** — `git tag v0.1.0 && git push origin v0.1.0` builds on
-   macOS/Windows/Linux and publishes installers to the matching GitHub Release.
+| 場所 | 役割 |
+|---|---|
+| `src-tauri/src/repo.rs` | 保存・履歴・復元・ファイル追加(git2)。テスト付き |
+| `src-tauri/src/watcher.rs` | フォルダの変更を検知して画面へ通知(保存はしない) |
+| `src-tauri/src/lib.rs` | Tauri コマンド |
+| `src/routes/+page.svelte` | メイン画面(ツールバー、サイドバー、ドロップ処理) |
+| `src/lib/` | `FileList` / `HistoryPane` / API ラッパー / 整形関数 |
 
-## Workflow
+## リリース
 
-Always work on a feature branch and merge into `main` via pull request — never
-push directly to `main`.
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+タグの push で [actions-templates](https://github.com/7thCode/actions-templates) の
+`tauri-multiplatform-release.yml` が動き、macOS(universal `.dmg`)/ Windows(NSIS `.exe`)/
+Linux(`.AppImage` / `.deb`)のインストーラーが GitHub Release に登録されます。
+リリースのたびに `src-tauri/tauri.conf.json` の `version` と、`docs/index.html` のバージョン・リンクを更新してください。
+インストーラーは未署名です。
+
+## ブランチ運用
+
+作業はフィーチャーブランチで行い、`main` へは Pull Request 経由でマージします(直接 push は不可)。
