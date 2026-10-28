@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PROJECT_NAME</title>
+    <title>giter</title>
     <style>
       :root {
         --bg: #ffffff;
@@ -117,17 +117,17 @@
   </head>
   <body>
     <main>
-      <h1>PROJECT_NAME</h1>
-      <p class="subtitle">PROJECT_DESCRIPTION</p>
+      <h1>giter</h1>
+      <p class="subtitle">フォルダの変更を、かんたんに記録して、いつでも以前の状態に戻せるバージョン管理アプリ。Git の知識は要りません。</p>
 
-      <p><strong>最新版: vX.Y.Z</strong></p>
+      <p><strong>最新版: v0.1.0</strong></p>
       <div class="download-grid">
         <div class="download-card">
           <strong>macOS</strong>
-          <span class="platform-sub">Apple Silicon (arm64)</span>
+          <span class="platform-sub">Apple Silicon / Intel (Universal)</span>
           <a
             class="download-button"
-            href="https://github.com/OWNER/REPO/releases/download/vX.Y.Z/REPO-X.Y.Z.dmg"
+            href="https://github.com/7thCode/giter/releases/download/v0.1.0/giter_0.1.0_universal.dmg"
           >
             .dmg をダウンロード
           </a>
@@ -137,7 +137,7 @@
           <span class="platform-sub">64bit (x64)</span>
           <a
             class="download-button"
-            href="https://github.com/OWNER/REPO/releases/download/vX.Y.Z/REPO-X.Y.Z-setup.exe"
+            href="https://github.com/7thCode/giter/releases/download/v0.1.0/giter_0.1.0_x64-setup.exe"
           >
             .exe をダウンロード
           </a>
@@ -147,28 +147,38 @@
           <span class="platform-sub">AppImage / 64bit (x64)</span>
           <a
             class="download-button"
-            href="https://github.com/OWNER/REPO/releases/download/vX.Y.Z/REPO-X.Y.Z.AppImage"
+            href="https://github.com/7thCode/giter/releases/download/v0.1.0/giter_0.1.0_amd64.AppImage"
           >
             .AppImage をダウンロード
           </a>
         </div>
       </div>
       <p class="meta">
-        過去のリリース一覧は <a href="https://github.com/OWNER/REPO/releases">Releases</a> から確認できます。
+        過去のリリース一覧は <a href="https://github.com/7thCode/giter/releases">Releases</a> から確認できます。
       </p>
 
       <h2>主な機能</h2>
       <ul>
-        <li>FEATURE_1</li>
-        <li>FEATURE_2</li>
+        <li>Finder のようなフォルダ表示(リスト / アイコン)で、変更のあるファイルに「新規」「変更あり」の印を表示</li>
+        <li>ファイルをドロップして追加(コピー)、ドラッグして取り出し</li>
+        <li>「保存」ボタンまたは <code>⌘S</code> で、好きなタイミングにメモ付きで保存</li>
+        <li>履歴から、ファイルやフォルダを以前の状態に戻す(戻す前の内容も失われません)</li>
+        <li>インターネット不要。すべてこの Mac / PC の中で完結します</li>
+      </ul>
+
+      <h2>初めて開くとき</h2>
+      <ul>
+        <li>macOS: 開発元が未署名のため、初回は Finder でアプリを右クリックして「開く」を選んでください。</li>
+        <li>Windows: SmartScreen の警告が出たら「詳細情報」→「実行」を選んでください。</li>
+        <li>Linux: ダウンロードしたファイルに実行権限を付けて起動してください(<code>chmod +x</code>)。</li>
       </ul>
 
       <h2>ソースコード</h2>
       <p>
-        <a href="https://github.com/OWNER/REPO">github.com/OWNER/REPO</a>
+        <a href="https://github.com/7thCode/giter">github.com/7thCode/giter</a>
       </p>
 
-      <footer>FOOTER_TEXT</footer>
+      <footer>Tauri 2 と Svelte 5 で作られています。</footer>
     </main>
   </body>
 </html>
