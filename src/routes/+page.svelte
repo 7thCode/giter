@@ -158,6 +158,15 @@
   // ドラッグ開始の瞬間に非同期待ちを挟まないよう、アイコンは先に用意しておく
   let dragIcon = "";
 
+  /** いま行われているドラッグが、一覧内のファイルを動かしているだけか(外部からの追加ではない) */
+  let ownDrag = false;
+
+  function isInsideRoot(path: string): boolean {
+    if (!root) return false;
+    const sep = root.includes("\\") ? "\\" : "/";
+    return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
+  }
+
   async function dragOut(entry: Entry) {
     if (!root || !dragIcon) return;
     try {
@@ -288,14 +297,18 @@
       listen("repo-changed", refresh),
       getCurrentWebview().onDragDropEvent(async (event) => {
         const p = event.payload;
-        if (p.type === "enter" || p.type === "over") dropping = root !== null;
+        // 一覧内でファイルをドラッグしただけ(管理フォルダ内のファイル)なら、追加の表示は出さない
+        if (p.type === "enter") ownDrag = p.paths.length > 0 && p.paths.every(isInsideRoot);
+        if (p.type === "enter" || p.type === "over") dropping = root !== null && !ownDrag;
         else if (p.type === "leave") dropping = false;
         else if (p.type === "drop") {
           dropping = false;
+          ownDrag = false;
           if (!root) return;
           try {
+            // 管理フォルダ内のファイルなどは、Rust 側で無視される(コピーされない)
             const added = await api.addFiles(root, cwd, p.paths);
-            say(`${added.length} 件を追加しました`);
+            if (added.length > 0) say(`${added.length} 件を追加しました`);
             refresh();
           } catch (e) {
             say(errorMessage(e));
