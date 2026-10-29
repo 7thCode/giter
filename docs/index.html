@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
     <title>giter — フォルダの変更を、かんたんに記録</title>
     <meta
       name="description"
@@ -653,7 +654,7 @@
           <a class="btn primary" id="hero-dl" href="#download">ダウンロード</a>
           <a class="btn ghost" href="https://github.com/7thCode/giter">GitHub で見る</a>
         </div>
-        <p class="hero-note" id="hero-note">v0.1.0 · macOS / Windows / Linux · 無料</p>
+        <p class="hero-note" id="hero-note">v0.1.1 · macOS / Windows / Linux · 無料</p>
 
         <div class="mock" aria-hidden="true">
           <div class="mock-bar">
@@ -749,25 +750,25 @@
       <section id="download">
         <div class="wrap">
           <div class="eyebrow">ダウンロード</div>
-          <h2>最新版 v0.1.0</h2>
+          <h2>最新版 v0.1.1</h2>
           <div class="dl">
             <div class="dl-card" data-os="mac">
               <h3>macOS</h3>
               <div class="sub">Apple Silicon / Intel (Universal)</div>
-              <a class="btn" href="https://github.com/7thCode/giter/releases/download/v0.1.0/giter_0.1.0_universal.dmg">.dmg をダウンロード</a>
+              <a class="btn" href="https://github.com/7thCode/giter/releases/download/v0.1.1/giter_0.1.1_universal.dmg">.dmg をダウンロード</a>
             </div>
             <div class="dl-card" data-os="win">
               <h3>Windows</h3>
               <div class="sub">64bit (x64)</div>
-              <a class="btn" href="https://github.com/7thCode/giter/releases/download/v0.1.0/giter_0.1.0_x64-setup.exe">.exe をダウンロード</a>
+              <a class="btn" href="https://github.com/7thCode/giter/releases/download/v0.1.1/giter_0.1.1_x64-setup.exe">.exe をダウンロード</a>
             </div>
             <div class="dl-card" data-os="linux">
               <h3>Linux</h3>
               <div class="sub">
                 64bit (x64) · Debian 系は
-                <a href="https://github.com/7thCode/giter/releases/download/v0.1.0/giter_0.1.0_amd64.deb">.deb</a>
+                <a href="https://github.com/7thCode/giter/releases/download/v0.1.1/giter_0.1.1_amd64.deb">.deb</a>
               </div>
-              <a class="btn" href="https://github.com/7thCode/giter/releases/download/v0.1.0/giter_0.1.0_amd64.AppImage">.AppImage をダウンロード</a>
+              <a class="btn" href="https://github.com/7thCode/giter/releases/download/v0.1.1/giter_0.1.1_amd64.AppImage">.AppImage をダウンロード</a>
             </div>
           </div>
           <p class="meta">
@@ -805,7 +806,7 @@
         var hero = document.getElementById('hero-dl');
         hero.href = card.querySelector('a.btn').href;
         hero.textContent = names[os] + ' 版をダウンロード';
-        document.getElementById('hero-note').textContent = 'v0.1.0 · ' + names[os] + ' · 無料';
+        document.getElementById('hero-note').textContent = 'v0.1.1 · ' + names[os] + ' · 無料';
       })();
     </script>
   </body>

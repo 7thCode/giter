@@ -12,6 +12,13 @@ export interface Entry {
   status: FileStatus;
 }
 
+export interface LargeFile {
+  path: string;
+  size: number;
+  /** まだ一度も保存していない(除外できるのはこれだけ) */
+  is_new: boolean;
+}
+
 export interface Version {
   id: string;
   message: string;
@@ -23,6 +30,9 @@ export const api = {
   openFolder: (root: string) => invoke<void>("open_folder", { root }),
   listDir: (root: string, rel: string) => invoke<Entry[]>("list_dir", { root, rel }),
   pendingCount: (root: string) => invoke<number>("pending_count", { root }),
+  pendingLarge: (root: string) => invoke<LargeFile[]>("pending_large", { root }),
+  excludePaths: (root: string, paths: string[]) => invoke<void>("exclude_paths", { root, paths }),
+  historySize: (root: string) => invoke<number>("history_size", { root }),
   saveNow: (root: string, message: string) => invoke<boolean>("save_now", { root, message }),
   history: (root: string, rel: string | null) => invoke<Version[]>("history", { root, rel }),
   restore: (root: string, id: string, rel: string | null) => invoke<void>("restore", { root, id, rel }),

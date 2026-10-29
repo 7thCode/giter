@@ -4,7 +4,7 @@ mod watcher;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use repo::{Entry, Error, Result, Version};
+use repo::{Entry, Error, LargeFile, Result, Version};
 use tauri::{AppHandle, State};
 
 #[derive(Default)]
@@ -30,6 +30,24 @@ fn list_dir(root: String, rel: String) -> Result<Vec<Entry>> {
 #[tauri::command(async)]
 fn pending_count(root: String) -> Result<usize> {
     repo::pending_count(&repo::open_or_init(&PathBuf::from(root))?)
+}
+
+/// 未保存の変更のうち、大きいファイル(保存前の警告用)。
+#[tauri::command(async)]
+fn pending_large(root: String) -> Result<Vec<LargeFile>> {
+    repo::pending_large(&repo::open_or_init(&PathBuf::from(root))?, repo::LARGE_FILE_BYTES)
+}
+
+/// 新規ファイルを以後の保存の対象から外す。
+#[tauri::command(async)]
+fn exclude_paths(root: String, paths: Vec<String>) -> Result<()> {
+    repo::exclude_paths(&repo::open_or_init(&PathBuf::from(root))?, &paths)
+}
+
+/// 履歴がディスク上で使っているバイト数。
+#[tauri::command(async)]
+fn history_size(root: String) -> Result<u64> {
+    repo::history_size(&repo::open_or_init(&PathBuf::from(root))?)
 }
 
 /// 「いま保存」。変更がなければ `false`。
@@ -89,6 +107,9 @@ pub fn run() {
             open_folder,
             list_dir,
             pending_count,
+            pending_large,
+            exclude_paths,
+            history_size,
             save_now,
             history,
             restore,
