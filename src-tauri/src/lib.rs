@@ -4,7 +4,8 @@ mod watcher;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use repo::{Entry, Error, LargeFile, Result, Version};
+use std::collections::HashMap;
+use repo::{Entry, Error, LargeFile, Plan, PlanChange, PlanLoss, Resolution, Result, Version};
 use tauri::{AppHandle, State};
 
 #[derive(Default)]
@@ -30,6 +31,60 @@ fn list_dir(root: String, rel: String) -> Result<Vec<Entry>> {
 #[tauri::command(async)]
 fn pending_count(root: String) -> Result<usize> {
     repo::pending_count(&repo::open_or_init(&PathBuf::from(root))?)
+}
+
+/// 案(本案と別案)の一覧。
+#[tauri::command(async)]
+fn list_plans(root: String) -> Result<Vec<Plan>> {
+    repo::plans(&repo::open_or_init(&PathBuf::from(root))?)
+}
+
+/// 別案を作って、その案に移る。未保存の変更は新しい案に持っていく。作った案の id を返す。
+#[tauri::command(async)]
+fn create_plan(root: String, name: String) -> Result<String> {
+    repo::create_plan(&repo::open_or_init(&PathBuf::from(root))?, &name)
+}
+
+/// 別の案に切り替える。未保存の変更があるときはエラー。
+#[tauri::command(async)]
+fn switch_plan(root: String, id: String) -> Result<()> {
+    repo::switch_plan(&repo::open_or_init(&PathBuf::from(root))?, &id)
+}
+
+/// 案をごみ箱に入れる(保存は残したまま一覧から外す)。
+#[tauri::command(async)]
+fn trash_plan(root: String, id: String) -> Result<()> {
+    repo::trash_plan(&repo::open_or_init(&PathBuf::from(root))?, &id)
+}
+
+/// その案を失ったとき、本案に残らない保存の数。
+#[tauri::command(async)]
+fn plan_loss(root: String, id: String) -> Result<PlanLoss> {
+    repo::plan_loss(&repo::open_or_init(&PathBuf::from(root))?, &id)
+}
+
+/// ごみ箱を空にする(`id` があればその案だけ)。空にした数を返す。
+#[tauri::command(async)]
+fn empty_trash(root: String, id: Option<String>) -> Result<usize> {
+    repo::empty_trash(&repo::open_or_init(&PathBuf::from(root))?, id.as_deref())
+}
+
+/// ごみ箱の案を一覧に戻す。
+#[tauri::command(async)]
+fn restore_plan(root: String, id: String) -> Result<()> {
+    repo::restore_plan(&repo::open_or_init(&PathBuf::from(root))?, &id)
+}
+
+/// 別案を本案に採用すると、どのファイルが変わるか。
+#[tauri::command(async)]
+fn plan_changes(root: String, id: String) -> Result<Vec<PlanChange>> {
+    repo::plan_changes(&repo::open_or_init(&PathBuf::from(root))?, &id)
+}
+
+/// 別案を本案に採用する。競合したファイルは `resolutions`(パス → primary/plan/both)で扱いを指定する。
+#[tauri::command(async)]
+fn adopt_plan(root: String, id: String, resolutions: HashMap<String, Resolution>) -> Result<()> {
+    repo::adopt_plan(&repo::open_or_init(&PathBuf::from(root))?, &id, &resolutions)
 }
 
 /// 未保存の変更のうち、大きいファイル(保存前の警告用)。
@@ -107,6 +162,15 @@ pub fn run() {
             open_folder,
             list_dir,
             pending_count,
+            list_plans,
+            create_plan,
+            switch_plan,
+            trash_plan,
+            restore_plan,
+            plan_loss,
+            empty_trash,
+            plan_changes,
+            adopt_plan,
             pending_large,
             exclude_paths,
             history_size,
