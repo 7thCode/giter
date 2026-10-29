@@ -8,9 +8,9 @@ use std::path::{Component, Path, PathBuf};
 use git2::build::CheckoutBuilder;
 use git2::{
     BranchType, Commit, IndexAddOption, Oid, Reference, Repository, RepositoryInitOptions, Signature, Status,
-    StatusOptions,
+    StatusOptions, Tree,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// OS やアプリが作る一時ファイル(Office の `~$*`、LibreOffice の `.~lock.*#`、vim の `*.swp`)も含める。
 const DEFAULT_IGNORE: &str = ".DS_Store\nThumbs.db\ndesktop.ini\n~$*\n.~lock.*#\n*.swp\n";
@@ -76,6 +76,35 @@ pub struct Plan {
     pub is_primary: bool,
     /// 最後に保存した時刻(UNIX 秒)
     pub time: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChangeKind {
+    Added,
+    Modified,
+    Deleted,
+}
+
+/// 別案を本案に採用したときに、本案のファイルがどうなるか。
+#[derive(Debug, Serialize)]
+pub struct PlanChange {
+    pub path: String,
+    pub kind: ChangeKind,
+    /// 本案でも別案でも、同じファイルが別々に変更されている
+    pub conflict: bool,
+}
+
+/// 競合したファイルの扱い。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Resolution {
+    /// 本案の版を使う
+    Primary,
+    /// 別案の版を使う
+    Plan,
+    /// 本案の版を残し、別案の版も別名で追加する
+    Both,
 }
 
 #[derive(Debug, Serialize)]
@@ -293,6 +322,130 @@ pub fn switch_plan(repo: &Repository, id: &str) -> Result<()> {
     cb.safe();
     repo.checkout_tree(commit.tree()?.as_object(), Some(&mut cb))?;
     repo.set_head(&format!("refs/heads/{id}"))?;
+    Ok(())
+}
+
+fn plan_commit<'r>(repo: &'r Repository, id: &str) -> Result<Commit<'r>> {
+    let branch = repo
+        .find_branch(id, BranchType::Local)
+        .map_err(|_| Error(format!("その案が見つかりません: {id}")))?;
+    Ok(branch.get().peel_to_commit()?)
+}
+
+fn tree_entry(tree: &Tree, path: &Path) -> Option<Oid> {
+    tree.get_path(path).ok().map(|e| e.id())
+}
+
+/// 別案を本案に採用すると、本案のファイルがどう変わるか(パス順)。
+/// 競合 = 分かれた時点から本案も別案も変更していて、結果が食い違うファイル。
+pub fn plan_changes(repo: &Repository, from_id: &str) -> Result<Vec<PlanChange>> {
+    let primary = primary_plan_id(repo)?;
+    if from_id == primary {
+        return Err(Error("本案は、本案に採用できません".into()));
+    }
+    let ours = plan_commit(repo, &primary)?;
+    let theirs = plan_commit(repo, from_id)?;
+    let base = repo.find_commit(repo.merge_base(ours.id(), theirs.id())?)?.tree()?;
+    let (ours_tree, theirs_tree) = (ours.tree()?, theirs.tree()?);
+    let diff = repo.diff_tree_to_tree(Some(&base), Some(&theirs_tree), None)?;
+    let mut changes = Vec::new();
+    for delta in diff.deltas() {
+        let Some(path) = delta.new_file().path().or_else(|| delta.old_file().path()) else { continue };
+        let (b, o, t) = (tree_entry(&base, path), tree_entry(&ours_tree, path), tree_entry(&theirs_tree, path));
+        if o == t {
+            continue; // 本案がすでに同じ内容
+        }
+        let kind = match (o, t) {
+            (_, None) => ChangeKind::Deleted,
+            (None, Some(_)) => ChangeKind::Added,
+            _ => ChangeKind::Modified,
+        };
+        changes.push(PlanChange { path: path.to_string_lossy().replace('\\', "/"), kind, conflict: o != b });
+    }
+    changes.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(changes)
+}
+
+/// 「両方残す」で別案の版を足すときの名前(`name (案名).ext`、重なれば連番)。
+fn both_copy_path(workdir: &Path, rel: &str, plan_name: &str) -> PathBuf {
+    let path = Path::new(rel);
+    let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let label = plan_name.replace(['/', '\\'], "-");
+    let dir = workdir.join(path.parent().unwrap_or(Path::new("")));
+    let first = dir.join(format!("{stem} ({label}){ext}"));
+    if !first.exists() {
+        return first;
+    }
+    (2..)
+        .map(|n| dir.join(format!("{stem} ({label}) {n}{ext}")))
+        .find(|c| !c.exists())
+        .expect("unbounded range")
+}
+
+/// 別案を本案に採用する。本案に移ったうえで、別案で変えたファイルを本案に反映し、
+/// 「採用しました」の記録(本案と別案をつなぐ保存)を1件作る。別案はそのまま残る。
+/// 競合したファイルは `resolutions` で扱いを指定する。行単位のマージはしない。
+pub fn adopt_plan(repo: &Repository, from_id: &str, resolutions: &HashMap<String, Resolution>) -> Result<()> {
+    let changes = plan_changes(repo, from_id)?;
+    if let Some(c) = changes.iter().find(|c| c.conflict && !resolutions.contains_key(&c.path)) {
+        return Err(Error(format!("「{}」をどう扱うか選んでください", c.path)));
+    }
+    if pending_count(repo)? > 0 {
+        return Err(Error("未保存の変更があります。先に保存してください".into()));
+    }
+    let primary = primary_plan_id(repo)?;
+    switch_plan(repo, &primary)?;
+
+    let root = workdir(repo)?.to_path_buf();
+    let ours = plan_commit(repo, &primary)?;
+    let theirs = plan_commit(repo, from_id)?;
+    let theirs_tree = theirs.tree()?;
+    let plan_name = repo
+        .config()?
+        .get_string(&description_key(from_id))
+        .unwrap_or_else(|_| from_id.to_string());
+
+    for change in &changes {
+        let resolution = if change.conflict { resolutions[&change.path] } else { Resolution::Plan };
+        let in_plan = tree_entry(&theirs_tree, Path::new(&change.path)).is_some();
+        match resolution {
+            Resolution::Primary => {}
+            Resolution::Plan if in_plan => {
+                let mut cb = CheckoutBuilder::new();
+                cb.force().path(&change.path);
+                repo.checkout_tree(theirs_tree.as_object(), Some(&mut cb))?;
+            }
+            Resolution::Plan => {
+                let path = safe_join(&root, &change.path)?;
+                if path.exists() {
+                    fs::remove_file(path)?;
+                }
+            }
+            Resolution::Both if in_plan => {
+                let entry = theirs_tree.get_path(Path::new(&change.path))?;
+                let blob = repo.find_blob(entry.id())?;
+                let dest = both_copy_path(&root, &change.path, &plan_name);
+                fs::write(dest, blob.content())?;
+            }
+            Resolution::Both => {}
+        }
+    }
+
+    let mut index = repo.index()?;
+    index.add_all(["*"].iter(), IndexAddOption::DEFAULT, None)?;
+    index.update_all(["*"].iter(), None)?;
+    index.write()?;
+    let tree = repo.find_tree(index.write_tree()?)?;
+    let sig = signature(repo)?;
+    repo.commit(
+        Some("HEAD"),
+        &sig,
+        &sig,
+        &format!("「{plan_name}」を採用しました"),
+        &tree,
+        &[&ours, &theirs],
+    )?;
     Ok(())
 }
 
@@ -968,6 +1121,103 @@ mod tests {
         let list = plans(&repo).unwrap();
         assert!(list[0].is_primary);
         assert_eq!(repo.config().unwrap().get_string(PRIMARY_KEY).unwrap(), "main");
+    }
+
+    fn names(changes: &[PlanChange]) -> Vec<(String, ChangeKind, bool)> {
+        changes.iter().map(|c| (c.path.clone(), c.kind, c.conflict)).collect()
+    }
+
+    #[test]
+    fn adopting_lists_added_modified_deleted_files() {
+        let (d, repo) = setup();
+        write(&d, "keep.txt", "k");
+        write(&d, "edit.txt", "1");
+        write(&d, "gone.txt", "g");
+        save(&repo, "v1").unwrap();
+        let id = create_plan(&repo, "別案").unwrap();
+        write(&d, "edit.txt", "2");
+        write(&d, "new.txt", "n");
+        fs::remove_file(d.path().join("gone.txt")).unwrap();
+        save(&repo, "plan").unwrap();
+        assert_eq!(
+            names(&plan_changes(&repo, &id).unwrap()),
+            vec![
+                ("edit.txt".into(), ChangeKind::Modified, false),
+                ("gone.txt".into(), ChangeKind::Deleted, false),
+                ("new.txt".into(), ChangeKind::Added, false),
+            ]
+        );
+        assert!(plan_changes(&repo, "main").is_err(), "本案は採用できない");
+    }
+
+    #[test]
+    fn adopting_applies_plan_to_primary_and_keeps_the_plan() {
+        let (d, repo) = setup();
+        write(&d, "edit.txt", "1");
+        write(&d, "gone.txt", "g");
+        save(&repo, "v1").unwrap();
+        let id = create_plan(&repo, "値上げ案").unwrap();
+        write(&d, "edit.txt", "2");
+        write(&d, "new.txt", "n");
+        fs::remove_file(d.path().join("gone.txt")).unwrap();
+        save(&repo, "plan").unwrap();
+        let plan_tip = tip(&repo, &id);
+
+        adopt_plan(&repo, &id, &HashMap::new()).unwrap();
+        assert!(current(&repo).is_primary, "採用後は本案を開く");
+        assert_eq!(fs::read_to_string(d.path().join("edit.txt")).unwrap(), "2");
+        assert!(d.path().join("new.txt").exists());
+        assert!(!d.path().join("gone.txt").exists());
+        assert_eq!(pending_count(&repo).unwrap(), 0);
+        assert_eq!(tip(&repo, &id), plan_tip, "別案は残る");
+        assert_eq!(history(&repo, None).unwrap()[0].message, "「値上げ案」を採用しました");
+        assert!(plan_changes(&repo, &id).unwrap().is_empty(), "採用後は差がない");
+    }
+
+    #[test]
+    fn conflicts_need_a_choice_and_each_choice_works() {
+        for (choice, edit, extra) in [
+            (Resolution::Primary, "primary", None),
+            (Resolution::Plan, "plan", None),
+            (Resolution::Both, "primary", Some("plan")),
+        ] {
+            let (d, repo) = setup();
+            write(&d, "a.txt", "base");
+            save(&repo, "v1").unwrap();
+            let id = create_plan(&repo, "案").unwrap();
+            write(&d, "a.txt", "plan");
+            save(&repo, "plan").unwrap();
+            switch_plan(&repo, "main").unwrap();
+            write(&d, "a.txt", "primary");
+            save(&repo, "primary").unwrap();
+
+            let changes = plan_changes(&repo, &id).unwrap();
+            assert_eq!(names(&changes), vec![("a.txt".into(), ChangeKind::Modified, true)]);
+            assert!(adopt_plan(&repo, &id, &HashMap::new()).is_err(), "選ばずに採用はできない");
+            assert_eq!(pending_count(&repo).unwrap(), 0);
+
+            adopt_plan(&repo, &id, &HashMap::from([("a.txt".to_string(), choice)])).unwrap();
+            assert_eq!(fs::read_to_string(d.path().join("a.txt")).unwrap(), edit);
+            let copy = d.path().join("a (案).txt");
+            assert_eq!(copy.exists(), extra.is_some());
+            if let Some(content) = extra {
+                assert_eq!(fs::read_to_string(copy).unwrap(), content);
+            }
+            assert_eq!(pending_count(&repo).unwrap(), 0);
+        }
+    }
+
+    #[test]
+    fn adopting_with_unsaved_changes_is_refused() {
+        let (d, repo) = setup();
+        write(&d, "a.txt", "1");
+        save(&repo, "v1").unwrap();
+        let id = create_plan(&repo, "案").unwrap();
+        write(&d, "a.txt", "2");
+        save(&repo, "plan").unwrap();
+        write(&d, "a.txt", "3");
+        assert!(adopt_plan(&repo, &id, &HashMap::new()).is_err());
+        assert_eq!(fs::read_to_string(d.path().join("a.txt")).unwrap(), "3");
     }
 
     #[test]

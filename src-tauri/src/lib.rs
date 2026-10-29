@@ -4,7 +4,8 @@ mod watcher;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use repo::{Entry, Error, LargeFile, Plan, Result, Version};
+use std::collections::HashMap;
+use repo::{Entry, Error, LargeFile, Plan, PlanChange, Resolution, Result, Version};
 use tauri::{AppHandle, State};
 
 #[derive(Default)]
@@ -48,6 +49,18 @@ fn create_plan(root: String, name: String) -> Result<String> {
 #[tauri::command(async)]
 fn switch_plan(root: String, id: String) -> Result<()> {
     repo::switch_plan(&repo::open_or_init(&PathBuf::from(root))?, &id)
+}
+
+/// 別案を本案に採用すると、どのファイルが変わるか。
+#[tauri::command(async)]
+fn plan_changes(root: String, id: String) -> Result<Vec<PlanChange>> {
+    repo::plan_changes(&repo::open_or_init(&PathBuf::from(root))?, &id)
+}
+
+/// 別案を本案に採用する。競合したファイルは `resolutions`(パス → primary/plan/both)で扱いを指定する。
+#[tauri::command(async)]
+fn adopt_plan(root: String, id: String, resolutions: HashMap<String, Resolution>) -> Result<()> {
+    repo::adopt_plan(&repo::open_or_init(&PathBuf::from(root))?, &id, &resolutions)
 }
 
 /// 未保存の変更のうち、大きいファイル(保存前の警告用)。
@@ -128,6 +141,8 @@ pub fn run() {
             list_plans,
             create_plan,
             switch_plan,
+            plan_changes,
+            adopt_plan,
             pending_large,
             exclude_paths,
             history_size,

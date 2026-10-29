@@ -5,7 +5,7 @@
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { ask, open } from "@tauri-apps/plugin-dialog";
   import { startDrag } from "@crabnebula/tauri-plugin-drag";
-  import { api, errorMessage, type Entry, type LargeFile, type Plan, type Version } from "$lib/api";
+  import { api, errorMessage, type Entry, type LargeFile, type Plan, type PlanChange, type Resolution, type Version } from "$lib/api";
   import { baseName, breadcrumbs, formatSize, formatTime, parentOf, planColor } from "$lib/format";
   import FileList from "$lib/FileList.svelte";
   import HistoryPane from "$lib/HistoryPane.svelte";
@@ -32,6 +32,12 @@
   let createOpen = $state(false);
   let newPlanName = $state("");
   let createError = $state("");
+  let adoptOpen = $state(false);
+  let adoptChanges = $state<PlanChange[]>([]);
+  let choices = $state<Record<string, Resolution>>({});
+  let adoptError = $state("");
+  const KIND_LABEL = { added: "追加", modified: "変更", deleted: "削除" } as const;
+  const adoptReady = $derived(adoptChanges.every((c) => !c.conflict || choices[c.path]));
 
   const currentPlan = $derived(plans.find((p) => p.is_current) ?? null);
   const primaryPlan = $derived(plans.find((p) => p.is_primary) ?? null);
@@ -288,6 +294,35 @@
     }
   }
 
+  /** 採用の前に、本案のどのファイルが変わるかを見せる */
+  async function openAdopt() {
+    if (!root || !currentPlan || currentPlan.is_primary) return;
+    adoptError = "";
+    choices = {};
+    try {
+      if ((await api.pendingCount(root)) > 0) {
+        say("未保存の変更があります。先に「保存」してから採用してください");
+        return;
+      }
+      adoptChanges = await api.planChanges(root, currentPlan.id);
+      adoptOpen = true;
+    } catch (e) {
+      say(errorMessage(e));
+    }
+  }
+
+  async function submitAdopt() {
+    if (!root || !currentPlan) return;
+    const name = currentPlan.name;
+    try {
+      await api.adoptPlan(root, currentPlan.id, choices);
+      adoptOpen = false;
+      await afterPlanChange(`「${name}」を本案に採用しました。「${name}」はそのまま残っています`);
+    } catch (e) {
+      adoptError = errorMessage(e);
+    }
+  }
+
   function openCreate() {
     planMenuOpen = false;
     newPlanName = "";
@@ -354,6 +389,7 @@
     if (event.key === "Escape") {
       planMenuOpen = false;
       createOpen = false;
+      adoptOpen = false;
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
       event.preventDefault();
@@ -559,7 +595,10 @@
       {#if currentPlan && !currentPlan.is_primary}
         <div class="banner" role="status" style:--plan={planColor(currentPlan.id, false)}>
           <span>別案「<strong>{currentPlan.name}</strong>」で作業中です。本案には影響しません。</span>
-          {#if primaryPlan}<button type="button" onclick={() => switchTo(primaryPlan)}>本案に戻る</button>{/if}
+          <span class="banner-actions">
+            <button type="button" onclick={openAdopt}>本案に採用…</button>
+            {#if primaryPlan}<button type="button" onclick={() => switchTo(primaryPlan)}>本案に戻る</button>{/if}
+          </span>
         </div>
       {/if}
 
@@ -621,6 +660,44 @@
       <button type="button" onclick={() => (createOpen = false)}>キャンセル</button>
       <button type="submit" class="primary" disabled={newPlanName.trim() === ""}>作る</button>
     </div>
+    </form>
+  </div>
+{/if}
+
+{#if adoptOpen && currentPlan}
+  <button type="button" class="backdrop" aria-label="閉じる" tabindex="-1" onclick={() => (adoptOpen = false)}></button>
+  <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="adopt-title">
+    <form onsubmit={(e) => { e.preventDefault(); void submitAdopt(); }}>
+      <h3 id="adopt-title">「{currentPlan.name}」を本案に採用する</h3>
+      {#if adoptChanges.length === 0}
+        <p class="note">本案と違いはありません。採用するものはありません。</p>
+      {:else}
+        <p class="note">採用すると、本案のファイルが {adoptChanges.length} 件変わります。「{currentPlan.name}」はそのまま残ります。</p>
+        <ul class="changes">
+          {#each adoptChanges as change (change.path)}
+            <li>
+              <span class="kind {change.kind}">{KIND_LABEL[change.kind]}</span>
+              <span class="cpath" title={change.path}>{change.path}</span>
+              {#if change.conflict}
+                <select aria-label="{change.path} の扱い" bind:value={choices[change.path]}>
+                  <option value={undefined}>どちらを使いますか?</option>
+                  <option value="primary">本案の版を使う</option>
+                  <option value="plan">別案の版を使う</option>
+                  <option value="both">両方残す</option>
+                </select>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+        {#if adoptChanges.some((c) => c.conflict)}
+          <p class="note">「どちらを使いますか?」のファイルは、本案と別案の両方で変更されています。「両方残す」は、本案の版を残し、別案の版を「名前 ({currentPlan.name}).拡張子」で追加します。</p>
+        {/if}
+      {/if}
+      {#if adoptError}<p class="error" role="alert">{adoptError}</p>{/if}
+      <div class="actions">
+        <button type="button" onclick={() => (adoptOpen = false)}>キャンセル</button>
+        <button type="submit" class="primary" disabled={adoptChanges.length === 0 || !adoptReady}>本案に採用する</button>
+      </div>
     </form>
   </div>
 {/if}
@@ -913,6 +990,54 @@
     color: var(--text);
     background: color-mix(in srgb, var(--plan) 16%, var(--bg));
     border-bottom: 2px solid var(--plan);
+  }
+  .banner-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .modal.wide {
+    width: min(560px, calc(100vw - 32px));
+  }
+  .changes {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 40vh;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .changes li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    font-size: 13px;
+  }
+  .changes li + li {
+    border-top: 1px solid var(--border);
+  }
+  .cpath {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .kind {
+    flex: none;
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 9px;
+    border: 1px solid currentColor;
+  }
+  .kind.added { color: #16a34a; }
+  .kind.modified { color: #d97706; }
+  .kind.deleted { color: #dc2626; }
+  .changes select {
+    font: inherit;
+    font-size: 12px;
+    max-width: 160px;
   }
   .banner button {
     background: var(--button);

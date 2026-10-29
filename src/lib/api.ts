@@ -30,6 +30,16 @@ export interface Plan {
   time: number;
 }
 
+export interface PlanChange {
+  path: string;
+  kind: "added" | "modified" | "deleted";
+  /** 本案でも別案でも、同じファイルが別々に変更されている */
+  conflict: boolean;
+}
+
+/** 競合したファイルの扱い: 本案の版 / 別案の版 / 両方残す */
+export type Resolution = "primary" | "plan" | "both";
+
 export interface Version {
   id: string;
   message: string;
@@ -44,6 +54,9 @@ export const api = {
   listPlans: (root: string) => invoke<Plan[]>("list_plans", { root }),
   createPlan: (root: string, name: string) => invoke<string>("create_plan", { root, name }),
   switchPlan: (root: string, id: string) => invoke<void>("switch_plan", { root, id }),
+  planChanges: (root: string, id: string) => invoke<PlanChange[]>("plan_changes", { root, id }),
+  adoptPlan: (root: string, id: string, resolutions: Record<string, Resolution>) =>
+    invoke<void>("adopt_plan", { root, id, resolutions }),
   pendingLarge: (root: string) => invoke<LargeFile[]>("pending_large", { root }),
   excludePaths: (root: string, paths: string[]) => invoke<void>("exclude_paths", { root, paths }),
   historySize: (root: string) => invoke<number>("history_size", { root }),
