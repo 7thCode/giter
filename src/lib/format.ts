@@ -43,3 +43,12 @@ export function extensionOf(name: string): string {
   const i = name.lastIndexOf(".");
   return i > 0 ? name.slice(i + 1, i + 5).toUpperCase() : "";
 }
+
+/** 案ごとの色。本案はアクセント色、別案は名前から決めた色(同じ案はいつも同じ色)。 */
+export function planColor(id: string, isPrimary: boolean): string {
+  if (isPrimary) return "var(--accent)";
+  let hash = 0;
+  for (const ch of id) hash = (hash * 31 + ch.codePointAt(0)!) >>> 0;
+  // 青紫(本案)と紛らわしくならないよう、色相を 20〜200 度の暖色〜緑系に寄せる
+  return `hsl(${20 + (hash % 180)} 70% 42%)`;
+}

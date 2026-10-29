@@ -5,8 +5,8 @@
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { ask, open } from "@tauri-apps/plugin-dialog";
   import { startDrag } from "@crabnebula/tauri-plugin-drag";
-  import { api, errorMessage, type Entry, type LargeFile, type Version } from "$lib/api";
-  import { baseName, breadcrumbs, formatSize, formatTime, parentOf } from "$lib/format";
+  import { api, errorMessage, type Entry, type LargeFile, type Plan, type Version } from "$lib/api";
+  import { baseName, breadcrumbs, formatSize, formatTime, parentOf, planColor } from "$lib/format";
   import FileList from "$lib/FileList.svelte";
   import HistoryPane from "$lib/HistoryPane.svelte";
 
@@ -26,6 +26,15 @@
   /** 保存前に警告する大きいファイル。空でなければ確認画面を出す */
   let largeFiles = $state<LargeFile[]>([]);
   let historyBytes = $state(0);
+
+  let plans = $state<Plan[]>([]);
+  let planMenuOpen = $state(false);
+  let createOpen = $state(false);
+  let newPlanName = $state("");
+  let createError = $state("");
+
+  const currentPlan = $derived(plans.find((p) => p.is_current) ?? null);
+  const primaryPlan = $derived(plans.find((p) => p.is_primary) ?? null);
 
   /** 履歴がこれを超えたら注意を促す */
   const HISTORY_WARN_BYTES = 1_000_000_000;
@@ -227,6 +236,78 @@
     if (r) untrack(() => void loadSize(r));
   });
 
+  async function loadPlans(r: string) {
+    try {
+      const list = await api.listPlans(r);
+      if (r === root) plans = list;
+    } catch (e) {
+      say(errorMessage(e));
+    }
+  }
+
+  $effect(() => {
+    const r = root;
+    if (r) untrack(() => void loadPlans(r));
+    else plans = [];
+  });
+
+  /** 案を作る/切り替えたあとの更新。フォルダの中身が入れ替わるので、表示位置と選択は最初に戻す */
+  async function afterPlanChange(message: string) {
+    if (!root) return;
+    selected = null;
+    cwd = "";
+    await loadPlans(root);
+    refresh();
+    void loadSize(root);
+    say(message);
+  }
+
+  /** 別の案に切り替える。フォルダの中身が入れ替わるので、未保存の変更は先に保存してもらう */
+  async function switchTo(plan: Plan) {
+    planMenuOpen = false;
+    if (!root || plan.is_current) return;
+    try {
+      if ((await api.pendingCount(root)) > 0) {
+        const from = currentPlan?.name ?? "いまの案";
+        const ok = await ask(
+          `未保存の変更があります。「${plan.name}」に切り替えると、フォルダの中身が入れ替わります。\n今の変更を「${from}」に保存してから切り替えますか?`,
+          { title: "保存してから切り替えますか?", kind: "warning", okLabel: "保存して切り替える", cancelLabel: "やめる" },
+        );
+        if (!ok) return;
+        if ((await api.pendingLarge(root)).length > 0) {
+          saveOpen = true;
+          say("大きいファイルがあります。先に「保存」で扱いを選んでください");
+          return;
+        }
+        await api.saveNow(root, "切り替え前の保存");
+      }
+      await api.switchPlan(root, plan.id);
+      await afterPlanChange(`「${plan.name}」に切り替えました。開いているファイルは、開き直してください`);
+    } catch (e) {
+      say(errorMessage(e));
+    }
+  }
+
+  function openCreate() {
+    planMenuOpen = false;
+    newPlanName = "";
+    createError = "";
+    createOpen = true;
+  }
+
+  async function submitCreate(event: SubmitEvent) {
+    event.preventDefault();
+    if (!root) return;
+    const name = newPlanName.trim();
+    try {
+      await api.createPlan(root, name);
+      createOpen = false;
+      await afterPlanChange(`別案「${name}」を作りました。ここでの変更は本案に影響しません`);
+    } catch (e) {
+      createError = errorMessage(e);
+    }
+  }
+
   function closeSave() {
     saveOpen = false;
     largeFiles = [];
@@ -270,6 +351,10 @@
   }
 
   function onKeydown(event: KeyboardEvent) {
+    if (event.key === "Escape") {
+      planMenuOpen = false;
+      createOpen = false;
+    }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
       event.preventDefault();
       if (root) saveOpen = true;
@@ -364,6 +449,20 @@
           </button>
           <button type="button" class="remove" aria-label="{baseName(dir)} を一覧から外す" title="一覧から外す(ファイルは消えません)" onclick={() => removeRoot(dir)}>×</button>
         </li>
+        {#if dir === root && plans.length > 1}
+          <li class="plans-wrap">
+            <ul class="plans" aria-label="案">
+              {#each plans as plan (plan.id)}
+                <li>
+                  <button type="button" class="plan-item" class:current={plan.is_current} aria-current={plan.is_current} onclick={() => switchTo(plan)}>
+                    <i class="dot" style:--plan={planColor(plan.id, plan.is_primary)}></i>
+                    <span>{plan.name}</span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          </li>
+        {/if}
       {/each}
     </ul>
     <button type="button" class="add" onclick={addFolder}>＋ フォルダを追加</button>
@@ -379,6 +478,32 @@
             <span aria-hidden="true">›</span>
             <button type="button" onclick={() => navigate(crumb.path)}>{crumb.name}</button>
           {/each}
+        </div>
+        <div class="plan">
+          <button
+            type="button"
+            class="tool plan-pill"
+            aria-haspopup="menu"
+            aria-expanded={planMenuOpen}
+            title="案を切り替える・別案を作る"
+            style:--plan={currentPlan ? planColor(currentPlan.id, currentPlan.is_primary) : "var(--accent)"}
+            onclick={() => (planMenuOpen = !planMenuOpen)}
+          >
+            <i class="dot"></i>案: {currentPlan?.name ?? "本案"} ▾
+          </button>
+          {#if planMenuOpen}
+            <div class="menu" role="menu">
+              {#each plans as plan (plan.id)}
+                <button type="button" role="menuitemradio" aria-checked={plan.is_current} class="menu-item" onclick={() => switchTo(plan)}>
+                  <i class="dot" style:--plan={planColor(plan.id, plan.is_primary)}></i>
+                  <span class="menu-name">{plan.name}</span>
+                  {#if plan.is_current}<span aria-hidden="true">✓</span>{/if}
+                </button>
+              {/each}
+              <hr />
+              <button type="button" role="menuitem" class="menu-item" onclick={openCreate}>＋ 別案を作る…</button>
+            </div>
+          {/if}
         </div>
         <div class="seg" role="group" aria-label="表示の切り替え">
           <button type="button" class:on={view === "list"} aria-pressed={view === "list"} onclick={() => setView("list")}>リスト</button>
@@ -431,6 +556,13 @@
         <button type="button" class="tool" aria-pressed={showHistory} onclick={() => (showHistory = !showHistory)}>履歴</button>
       </header>
 
+      {#if currentPlan && !currentPlan.is_primary}
+        <div class="banner" role="status" style:--plan={planColor(currentPlan.id, false)}>
+          <span>別案「<strong>{currentPlan.name}</strong>」で作業中です。本案には影響しません。</span>
+          {#if primaryPlan}<button type="button" onclick={() => switchTo(primaryPlan)}>本案に戻る</button>{/if}
+        </div>
+      {/if}
+
       <div class="content">
         <FileList {entries} {view} bind:selected onopen={openEntry} ondragout={dragOut} />
         {#if dropping}
@@ -471,6 +603,27 @@
     />
   {/if}
 </div>
+
+{#if createOpen}
+  <button type="button" class="backdrop" aria-label="閉じる" tabindex="-1" onclick={() => (createOpen = false)}></button>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="create-title">
+    <form onsubmit={submitCreate}>
+    <h3 id="create-title">別案を作る</h3>
+    <p class="note">今の状態から、もうひとつの案を始めます。本案は変わりません。いつでも本案に戻れます。</p>
+    {#if pending > 0}
+      <p class="note strong">いまの未保存の変更は、この別案に含まれます。</p>
+    {/if}
+    <label for="plan-name">別案の名前</label>
+    <!-- svelte-ignore a11y_autofocus -->
+    <input id="plan-name" bind:value={newPlanName} placeholder="例: 価格を上げる案" autofocus />
+    {#if createError}<p class="error" role="alert">{createError}</p>{/if}
+    <div class="actions">
+      <button type="button" onclick={() => (createOpen = false)}>キャンセル</button>
+      <button type="submit" class="primary" disabled={newPlanName.trim() === ""}>作る</button>
+    </div>
+    </form>
+  </div>
+{/if}
 
 {#if notice}
   <div class="toast" role="status">{notice}</div>
@@ -667,6 +820,177 @@
     display: flex;
     justify-content: flex-end;
     gap: 8px;
+  }
+  .dot {
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--plan, var(--accent));
+    flex: none;
+  }
+  .plans-wrap {
+    display: block;
+  }
+  .plans {
+    list-style: none;
+    margin: 0 0 4px 22px;
+    padding: 0;
+  }
+  .plan-item {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 3px 6px;
+    background: none;
+    border: 0;
+    border-radius: 6px;
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .plan-item.current {
+    font-weight: 600;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+  .plan {
+    position: relative;
+  }
+  .plan-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    border-color: color-mix(in srgb, var(--plan) 55%, var(--border));
+  }
+  .menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 6px);
+    z-index: 10;
+    min-width: 220px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 6px;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.2);
+  }
+  .menu hr {
+    border: 0;
+    border-top: 1px solid var(--border);
+    margin: 4px 0;
+  }
+  .menu-item {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    background: none;
+    border: 0;
+    border-radius: 6px;
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+  }
+  .menu-item:hover {
+    background: var(--button-hover);
+  }
+  .menu-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 14px;
+    font-size: 13px;
+    color: var(--text);
+    background: color-mix(in srgb, var(--plan) 16%, var(--bg));
+    border-bottom: 2px solid var(--plan);
+  }
+  .banner button {
+    background: var(--button);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 2px 12px;
+    color: var(--text);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    background: rgb(0 0 0 / 0.35);
+    border: 0;
+    padding: 0;
+    cursor: default;
+  }
+  .modal {
+    position: fixed;
+    z-index: 21;
+    left: 50%;
+    top: 22%;
+    transform: translateX(-50%);
+    width: min(420px, calc(100vw - 32px));
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px;
+    box-shadow: 0 16px 48px rgb(0 0 0 / 0.35);
+  }
+  .modal form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .modal h3 {
+    margin: 0;
+    font-size: 16px;
+  }
+  .modal label {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .modal input {
+    font: inherit;
+    padding: 6px 9px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+  }
+  .modal .actions button {
+    background: var(--button);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 14px;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .modal .actions button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+  }
+  .modal .actions button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .note.strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .error {
+    margin: 0;
+    font-size: 12px;
+    color: #d92d20;
   }
   .actions.wrap {
     flex-wrap: wrap;

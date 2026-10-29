@@ -19,6 +19,17 @@ export interface LargeFile {
   is_new: boolean;
 }
 
+/** 案(Git のブランチ)。`id` は内部名、`name` は画面に出す名前。 */
+export interface Plan {
+  id: string;
+  name: string;
+  is_current: boolean;
+  /** 本案(最初の案) */
+  is_primary: boolean;
+  /** 最後に保存した時刻(UNIX 秒) */
+  time: number;
+}
+
 export interface Version {
   id: string;
   message: string;
@@ -30,6 +41,9 @@ export const api = {
   openFolder: (root: string) => invoke<void>("open_folder", { root }),
   listDir: (root: string, rel: string) => invoke<Entry[]>("list_dir", { root, rel }),
   pendingCount: (root: string) => invoke<number>("pending_count", { root }),
+  listPlans: (root: string) => invoke<Plan[]>("list_plans", { root }),
+  createPlan: (root: string, name: string) => invoke<string>("create_plan", { root, name }),
+  switchPlan: (root: string, id: string) => invoke<void>("switch_plan", { root, id }),
   pendingLarge: (root: string) => invoke<LargeFile[]>("pending_large", { root }),
   excludePaths: (root: string, paths: string[]) => invoke<void>("exclude_paths", { root, paths }),
   historySize: (root: string) => invoke<number>("history_size", { root }),
