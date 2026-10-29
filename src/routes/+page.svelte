@@ -5,8 +5,8 @@
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { ask, open } from "@tauri-apps/plugin-dialog";
   import { startDrag } from "@crabnebula/tauri-plugin-drag";
-  import { api, errorMessage, type Entry, type Version } from "$lib/api";
-  import { baseName, breadcrumbs, formatTime, parentOf } from "$lib/format";
+  import { api, errorMessage, type Entry, type LargeFile, type Version } from "$lib/api";
+  import { baseName, breadcrumbs, formatSize, formatTime, parentOf } from "$lib/format";
   import FileList from "$lib/FileList.svelte";
   import HistoryPane from "$lib/HistoryPane.svelte";
 
@@ -23,6 +23,12 @@
   let notice = $state("");
   let saveOpen = $state(false);
   let saveMessage = $state("");
+  /** 保存前に警告する大きいファイル。空でなければ確認画面を出す */
+  let largeFiles = $state<LargeFile[]>([]);
+  let historyBytes = $state(0);
+
+  /** 履歴がこれを超えたら注意を促す */
+  const HISTORY_WARN_BYTES = 1_000_000_000;
 
   const selectedEntry = $derived(entries.find((e) => e.path === selected) ?? null);
   /** 履歴・復元の対象。選択があればそれ、なければ表示中のフォルダ(ルートなら全体) */
@@ -192,20 +198,63 @@
       await api.restore(root, version.id, scopeRel);
       say("戻しました。内容を確認して「保存」で記録できます");
       refresh();
+      void loadSize(root);
     } catch (e) {
       say(errorMessage(e));
     }
   }
 
-  async function saveNow(event: SubmitEvent) {
+  async function loadSize(r: string) {
+    try {
+      const bytes = await api.historySize(r);
+      if (r === root) historyBytes = bytes;
+    } catch {
+      // サイズ表示ができなくても操作は続けられる
+    }
+  }
+
+  $effect(() => {
+    const r = root;
+    if (r) untrack(() => void loadSize(r));
+  });
+
+  function closeSave() {
+    saveOpen = false;
+    largeFiles = [];
+  }
+
+  /** 送信時、大きいファイルがあれば保存せずに確認画面を出す */
+  async function submitSave(event: SubmitEvent) {
     event.preventDefault();
     if (!root) return;
     try {
+      const large = await api.pendingLarge(root);
+      if (large.length > 0) {
+        largeFiles = large;
+        return;
+      }
+      await save(false);
+    } catch (e) {
+      say(errorMessage(e));
+    }
+  }
+
+  /** `excludeNew` なら、大きい新規ファイルを以後の保存から外してから保存する */
+  async function save(excludeNew: boolean) {
+    if (!root) return;
+    try {
+      if (excludeNew) {
+        await api.excludePaths(
+          root,
+          largeFiles.filter((f) => f.is_new).map((f) => f.path),
+        );
+      }
       const saved = await api.saveNow(root, saveMessage);
       say(saved ? "保存しました" : "保存する変更はありません");
-      saveOpen = false;
       saveMessage = "";
+      closeSave();
       refresh();
+      void loadSize(root);
     } catch (e) {
       say(errorMessage(e));
     }
@@ -260,13 +309,20 @@
         if (!root) return;
         try {
           if ((await api.pendingCount(root)) === 0) return;
-          const save = await ask("未保存の変更があります。保存してから閉じますか?", {
+          const saveAndClose = await ask("未保存の変更があります。保存してから閉じますか?", {
             title: "終了する前に",
             kind: "warning",
             okLabel: "保存して閉じる",
             cancelLabel: "閉じない",
           });
-          if (!save) return event.preventDefault();
+          if (!saveAndClose) return event.preventDefault();
+          // 大きいファイルは黙って保存せず、保存画面で選んでもらう
+          if ((await api.pendingLarge(root)).length > 0) {
+            event.preventDefault();
+            saveOpen = true;
+            say("大きいファイルがあります。保存の方法を選んでください");
+            return;
+          }
           await api.saveNow(root, "終了時の保存");
         } catch (e) {
           // 確認できなかったときは閉じずに状況を見せる
@@ -316,19 +372,47 @@
           <button type="button" class:on={view === "icon"} aria-pressed={view === "icon"} onclick={() => setView("icon")}>アイコン</button>
         </div>
         <div class="save">
-          <button type="button" class="tool primary" aria-expanded={saveOpen} onclick={() => (saveOpen = !saveOpen)}>
+          <button type="button" class="tool primary" aria-expanded={saveOpen} onclick={() => (saveOpen ? closeSave() : (saveOpen = true))}>
             保存{#if pending > 0}<span class="count">{pending}</span>{/if}
           </button>
           {#if saveOpen}
-            <form class="popover" onsubmit={saveNow}>
-              <label for="memo">メモ(省略できます)</label>
-              <!-- svelte-ignore a11y_autofocus -->
-              <input id="memo" bind:value={saveMessage} placeholder="例: 見積書を修正" autofocus />
-              <div class="actions">
-                <button type="button" onclick={() => (saveOpen = false)}>キャンセル</button>
-                <button type="submit" class="primary">保存</button>
+            {#if largeFiles.length > 0}
+              <div class="popover" role="alertdialog" aria-labelledby="large-title">
+                <strong id="large-title">大きいファイルがあります</strong>
+                <p class="note">
+                  保存すると、変更のたびにファイル全体が履歴に増え、ディスクを使います。
+                  また、100 MB を超えるファイルは GitHub へ送れません(今後の同期機能)。
+                </p>
+                <ul class="large-list">
+                  {#each largeFiles as file (file.path)}
+                    <li>
+                      <span class="path">{file.path}</span>
+                      <span class="muted">{formatSize(file.size, false)}{file.is_new ? "" : "(保存済み)"}</span>
+                    </li>
+                  {/each}
+                </ul>
+                {#if largeFiles.some((f) => !f.is_new)}
+                  <p class="note">「保存済み」のファイルは、除外できません。</p>
+                {/if}
+                <div class="actions wrap">
+                  <button type="button" onclick={closeSave}>キャンセル</button>
+                  <button type="button" onclick={() => save(false)}>そのまま保存</button>
+                  {#if largeFiles.some((f) => f.is_new)}
+                    <button type="button" class="primary" onclick={() => save(true)}>除外して保存</button>
+                  {/if}
+                </div>
               </div>
-            </form>
+            {:else}
+              <form class="popover" onsubmit={submitSave}>
+                <label for="memo">メモ(省略できます)</label>
+                <!-- svelte-ignore a11y_autofocus -->
+                <input id="memo" bind:value={saveMessage} placeholder="例: 見積書を修正" autofocus />
+                <div class="actions">
+                  <button type="button" onclick={closeSave}>キャンセル</button>
+                  <button type="submit" class="primary">保存</button>
+                </div>
+              </form>
+            {/if}
           {/if}
         </div>
         <button type="button" class="tool" aria-pressed={showHistory} onclick={() => (showHistory = !showHistory)}>履歴</button>
@@ -346,6 +430,13 @@
       <footer class="statusbar">
         <span>{entries.length} 項目</span>
         <span>{pending > 0 ? `未保存の変更 ${pending} 件(⌘S で保存)` : "すべて保存済み"}</span>
+        <span
+          class="history-size"
+          class:warn={historyBytes > HISTORY_WARN_BYTES}
+          title="履歴がディスクで使っている量です。大きいファイルは、変更のたびに丸ごと増えます"
+        >
+          履歴 {formatSize(historyBytes, false)}
+        </span>
       </footer>
     {:else}
       <div class="welcome">
@@ -563,6 +654,43 @@
     display: flex;
     justify-content: flex-end;
     gap: 8px;
+  }
+  .actions.wrap {
+    flex-wrap: wrap;
+  }
+  .note {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .large-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 140px;
+    overflow-y: auto;
+    font-size: 12px;
+  }
+  .large-list li {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 3px 0;
+  }
+  .large-list .path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .muted {
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+  .history-size.warn {
+    background: var(--mod-bg);
+    color: var(--mod-fg);
+    border-radius: 9px;
+    padding: 0 8px;
   }
   .content {
     flex: 1;

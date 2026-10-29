@@ -9,7 +9,11 @@ use git2::build::CheckoutBuilder;
 use git2::{Commit, IndexAddOption, Oid, Repository, RepositoryInitOptions, Signature, Status, StatusOptions};
 use serde::Serialize;
 
-const DEFAULT_IGNORE: &str = ".DS_Store\nThumbs.db\ndesktop.ini\n";
+/// OS やアプリが作る一時ファイル(Office の `~$*`、LibreOffice の `.~lock.*#`、vim の `*.swp`)も含める。
+const DEFAULT_IGNORE: &str = ".DS_Store\nThumbs.db\ndesktop.ini\n~$*\n.~lock.*#\n*.swp\n";
+
+/// これを超えるファイルは、保存前に警告する(GitHub が push を拒否する上限と同じ)。
+pub const LARGE_FILE_BYTES: u64 = 100_000_000;
 
 #[derive(Debug)]
 pub struct Error(pub String);
@@ -54,6 +58,14 @@ pub struct Entry {
 }
 
 #[derive(Debug, Serialize)]
+pub struct LargeFile {
+    pub path: String,
+    pub size: u64,
+    /// まだ一度も保存していないファイル(除外できるのはこれだけ)
+    pub is_new: bool,
+}
+
+#[derive(Debug, Serialize)]
 pub struct Version {
     pub id: String,
     pub message: String,
@@ -69,6 +81,8 @@ pub fn open_or_init(root: &Path) -> Result<Repository> {
     let mut opts = RepositoryInitOptions::new();
     opts.initial_head("main");
     let repo = Repository::init_opts(root, &opts)?;
+    // ユーザーの git 設定(Windows に多い autocrlf=true)に関わらず、戻したファイルをバイト単位で一致させる
+    repo.config()?.set_str("core.autocrlf", "false")?;
     let ignore = root.join(".gitignore");
     if !ignore.exists() {
         fs::write(&ignore, DEFAULT_IGNORE)?;
@@ -163,6 +177,80 @@ fn changed_files(repo: &Repository) -> Result<HashMap<String, FileStatus>> {
 /// 未保存の変更があるファイル数。
 pub fn pending_count(repo: &Repository) -> Result<usize> {
     Ok(changed_files(repo)?.len())
+}
+
+/// 未保存の変更のうち、`threshold` バイトを超えるファイル(大きい順)。
+pub fn pending_large(repo: &Repository, threshold: u64) -> Result<Vec<LargeFile>> {
+    let root = workdir(repo)?;
+    let mut found: Vec<LargeFile> = changed_files(repo)?
+        .into_iter()
+        .filter_map(|(path, status)| {
+            let meta = fs::metadata(root.join(&path)).ok()?;
+            (meta.is_file() && meta.len() > threshold).then(|| LargeFile {
+                size: meta.len(),
+                is_new: status == FileStatus::New,
+                path,
+            })
+        })
+        .collect();
+    found.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.path.cmp(&b.path)));
+    Ok(found)
+}
+
+/// gitignore のパターンとして、パスの文字をそのまま一致させるためのエスケープ。
+fn exclude_pattern(path: &str) -> String {
+    let mut out = String::from("/");
+    for c in path.chars() {
+        if matches!(c, '*' | '?' | '[' | ']' | '\\' | '#' | '!') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    // 末尾の空白は gitignore では無視されるので、エスケープして残す
+    if out.ends_with(' ') {
+        out.insert(out.len() - 1, '\\');
+    }
+    out
+}
+
+/// 以後保存の対象にしない。ユーザーの `.gitignore` は触らず、`.git/info/exclude` に追記する。
+/// すでに保存済み(追跡中)のファイルには効かないので、新規ファイルにだけ使う。
+pub fn exclude_paths(repo: &Repository, paths: &[String]) -> Result<()> {
+    let root = workdir(repo)?;
+    let mut lines = String::new();
+    for path in paths {
+        safe_join(root, path)?;
+        if path.contains('\n') {
+            return Err(Error(format!("除外できないファイル名です: {path}")));
+        }
+        lines.push_str(&exclude_pattern(path));
+        lines.push('\n');
+    }
+    let info = repo.path().join("info");
+    fs::create_dir_all(&info)?;
+    let file = info.join("exclude");
+    let mut content = fs::read_to_string(&file).unwrap_or_default();
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(&lines);
+    fs::write(&file, content)?;
+    Ok(())
+}
+
+fn dir_size(dir: &Path) -> io::Result<u64> {
+    let mut total = 0;
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let meta = entry.metadata()?;
+        total += if meta.is_dir() { dir_size(&entry.path())? } else { meta.len() };
+    }
+    Ok(total)
+}
+
+/// 履歴(`.git`)がディスク上で使っているバイト数。
+pub fn history_size(repo: &Repository) -> Result<u64> {
+    Ok(dir_size(repo.path())?)
 }
 
 /// Finder のようにフォルダ直下の項目を返す。`.` で始まる項目は隠す。
@@ -508,6 +596,90 @@ mod tests {
         let added = add_files(&repo, "", &[ext.path().join("proj")]).unwrap();
         assert_eq!(added.len(), 1);
         assert!(d.path().join(&added[0]).join("inner/f.txt").exists());
+    }
+
+    #[test]
+    fn office_and_editor_temp_files_are_ignored() {
+        let (d, repo) = setup();
+        write(&d, "~$report.docx", "lock");
+        write(&d, ".~lock.report.odt#", "lock");
+        write(&d, "notes.txt.swp", "swap");
+        assert_eq!(pending_count(&repo).unwrap(), 0);
+        write(&d, "report.docx", "real");
+        assert_eq!(pending_count(&repo).unwrap(), 1);
+    }
+
+    #[test]
+    fn line_endings_are_not_converted() {
+        let (_d, repo) = setup();
+        assert_eq!(repo.config().unwrap().get_string("core.autocrlf").unwrap(), "false");
+    }
+
+    #[test]
+    fn binary_and_crlf_files_restore_byte_for_byte() {
+        let (d, repo) = setup();
+        let binary: Vec<u8> = (0..=255u8).chain([0, 0, 13, 10, 13, 10]).collect();
+        let text = b"line1\r\nline2\r\n".to_vec();
+        fs::write(d.path().join("data.bin"), &binary).unwrap();
+        fs::write(d.path().join("text.txt"), &text).unwrap();
+        let v1 = save(&repo, "v1").unwrap().unwrap();
+        fs::write(d.path().join("data.bin"), b"changed").unwrap();
+        fs::write(d.path().join("text.txt"), b"changed").unwrap();
+        save(&repo, "v2").unwrap();
+        restore(&repo, &v1, None).unwrap();
+        assert_eq!(fs::read(d.path().join("data.bin")).unwrap(), binary);
+        assert_eq!(fs::read(d.path().join("text.txt")).unwrap(), text);
+    }
+
+    #[test]
+    fn pending_large_lists_only_files_over_threshold() {
+        let (d, repo) = setup();
+        write(&d, "small.txt", "x");
+        write(&d, "big.bin", &"x".repeat(50));
+        write(&d, "sub/bigger.bin", &"x".repeat(80));
+        let large = pending_large(&repo, 10).unwrap();
+        let found: Vec<_> = large.iter().map(|f| (f.path.as_str(), f.size, f.is_new)).collect();
+        assert_eq!(found, [("sub/bigger.bin", 80, true), ("big.bin", 50, true)]);
+        // 保存済みのファイルが大きくなった場合は is_new が false
+        save(&repo, "s").unwrap();
+        write(&d, "big.bin", &"y".repeat(60));
+        let large = pending_large(&repo, 10).unwrap();
+        assert_eq!(large.len(), 1);
+        assert!(!large[0].is_new);
+    }
+
+    #[test]
+    fn excluded_paths_are_no_longer_pending() {
+        let (d, repo) = setup();
+        write(&d, "[a]*.bin", "special");
+        write(&d, "#x", "hash");
+        write(&d, "a.bin", "plain");
+        write(&d, "keep.txt", "keep");
+        exclude_paths(&repo, &["[a]*.bin".to_string(), "#x".to_string()]).unwrap();
+        // glob と解釈されると a.bin も巻き込まれる。文字どおりの一致だけが除外される
+        assert_eq!(pending_count(&repo).unwrap(), 2);
+        save(&repo, "s").unwrap();
+        assert_eq!(pending_count(&repo).unwrap(), 0);
+        // 除外したファイルは履歴に入らず、そうでないファイルは入る(ディスク上には残る)
+        assert!(history(&repo, Some("[a]*.bin")).unwrap().is_empty());
+        assert!(history(&repo, Some("#x")).unwrap().is_empty());
+        assert_eq!(history(&repo, Some("a.bin")).unwrap().len(), 1);
+        assert!(d.path().join("#x").exists());
+    }
+
+    #[test]
+    fn exclude_paths_rejects_escaping_paths() {
+        let (_d, repo) = setup();
+        assert!(exclude_paths(&repo, &["../outside".to_string()]).is_err());
+    }
+
+    #[test]
+    fn history_size_grows_after_saving() {
+        let (d, repo) = setup();
+        let before = history_size(&repo).unwrap();
+        write(&d, "data.bin", &"z".repeat(5000));
+        save(&repo, "s").unwrap();
+        assert!(history_size(&repo).unwrap() > before);
     }
 
     #[test]
