@@ -26,6 +26,8 @@ export interface Plan {
   is_current: boolean;
   /** 本案(最初の案) */
   is_primary: boolean;
+  /** しまってある案 */
+  is_archived: boolean;
   /** 最後に保存した時刻(UNIX 秒) */
   time: number;
 }
@@ -54,6 +56,8 @@ export const api = {
   listPlans: (root: string) => invoke<Plan[]>("list_plans", { root }),
   createPlan: (root: string, name: string) => invoke<string>("create_plan", { root, name }),
   switchPlan: (root: string, id: string) => invoke<void>("switch_plan", { root, id }),
+  archivePlan: (root: string, id: string) => invoke<void>("archive_plan", { root, id }),
+  reopenPlan: (root: string, id: string) => invoke<void>("reopen_plan", { root, id }),
   planChanges: (root: string, id: string) => invoke<PlanChange[]>("plan_changes", { root, id }),
   adoptPlan: (root: string, id: string, resolutions: Record<string, Resolution>) =>
     invoke<void>("adopt_plan", { root, id, resolutions }),

@@ -39,6 +39,8 @@
   const KIND_LABEL = { added: "追加", modified: "変更", deleted: "削除" } as const;
   const adoptReady = $derived(adoptChanges.every((c) => !c.conflict || choices[c.path]));
 
+  const activePlans = $derived(plans.filter((p) => !p.is_archived));
+  const archivedPlans = $derived(plans.filter((p) => p.is_archived));
   const currentPlan = $derived(plans.find((p) => p.is_current) ?? null);
   const primaryPlan = $derived(plans.find((p) => p.is_primary) ?? null);
 
@@ -294,6 +296,51 @@
     }
   }
 
+  /** 案をしまう。消えるわけではなく、「しまった案」からいつでも開き直せる */
+  async function archive(plan: Plan) {
+    if (!root) return;
+    const ok = await ask(`「${plan.name}」をしまいます。\n消えません。案メニューの「しまった案」から、いつでも開き直せます。`, {
+      title: "この案をしまいますか?",
+      okLabel: "しまう",
+      cancelLabel: "やめる",
+    });
+    if (!ok) return;
+    try {
+      await api.archivePlan(root, plan.id);
+      await loadPlans(root);
+      say(`「${plan.name}」をしまいました`);
+    } catch (e) {
+      say(errorMessage(e));
+    }
+  }
+
+  async function reopen(plan: Plan) {
+    planMenuOpen = false;
+    if (!root) return;
+    try {
+      await api.reopenPlan(root, plan.id);
+      await loadPlans(root);
+      say(`「${plan.name}」を開き直せるようにしました`);
+    } catch (e) {
+      say(errorMessage(e));
+    }
+  }
+
+  /** 初めて別案を作ったときに、1度だけ仕組みを説明する */
+  const INTRO_KEY = "giter.planIntroSeen";
+  let introOpen = $state(false);
+
+  function showIntroOnce() {
+    try {
+      if (localStorage.getItem(INTRO_KEY)) return;
+      localStorage.setItem(INTRO_KEY, "1");
+    } catch {
+      // 保存できない環境では、毎回出さないよう何もしない
+      return;
+    }
+    introOpen = true;
+  }
+
   /** 採用の前に、本案のどのファイルが変わるかを見せる */
   async function openAdopt() {
     if (!root || !currentPlan || currentPlan.is_primary) return;
@@ -323,6 +370,13 @@
     }
   }
 
+  /** いま開いている案はしまえないので、本案に戻ってからしまう */
+  async function switchThenArchive(plan: Plan) {
+    if (!primaryPlan) return;
+    await switchTo(primaryPlan);
+    if (currentPlan?.is_primary) await archive(plan);
+  }
+
   function openCreate() {
     planMenuOpen = false;
     newPlanName = "";
@@ -338,6 +392,7 @@
       await api.createPlan(root, name);
       createOpen = false;
       await afterPlanChange(`別案「${name}」を作りました。ここでの変更は本案に影響しません`);
+      showIntroOnce();
     } catch (e) {
       createError = errorMessage(e);
     }
@@ -390,6 +445,7 @@
       planMenuOpen = false;
       createOpen = false;
       adoptOpen = false;
+      introOpen = false;
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
       event.preventDefault();
@@ -485,10 +541,10 @@
           </button>
           <button type="button" class="remove" aria-label="{baseName(dir)} を一覧から外す" title="一覧から外す(ファイルは消えません)" onclick={() => removeRoot(dir)}>×</button>
         </li>
-        {#if dir === root && plans.length > 1}
+        {#if dir === root && activePlans.length > 1}
           <li class="plans-wrap">
             <ul class="plans" aria-label="案">
-              {#each plans as plan (plan.id)}
+              {#each activePlans as plan (plan.id)}
                 <li>
                   <button type="button" class="plan-item" class:current={plan.is_current} aria-current={plan.is_current} onclick={() => switchTo(plan)}>
                     <i class="dot" style:--plan={planColor(plan.id, plan.is_primary)}></i>
@@ -529,7 +585,7 @@
           </button>
           {#if planMenuOpen}
             <div class="menu" role="menu">
-              {#each plans as plan (plan.id)}
+              {#each activePlans as plan (plan.id)}
                 <button type="button" role="menuitemradio" aria-checked={plan.is_current} class="menu-item" onclick={() => switchTo(plan)}>
                   <i class="dot" style:--plan={planColor(plan.id, plan.is_primary)}></i>
                   <span class="menu-name">{plan.name}</span>
@@ -538,6 +594,16 @@
               {/each}
               <hr />
               <button type="button" role="menuitem" class="menu-item" onclick={openCreate}>＋ 別案を作る…</button>
+              {#if archivedPlans.length > 0}
+                <hr />
+                <div class="menu-label">しまった案</div>
+                {#each archivedPlans as plan (plan.id)}
+                  <div class="menu-item archived">
+                    <span class="menu-name">{plan.name}</span>
+                    <button type="button" class="link" onclick={() => reopen(plan)}>開き直す</button>
+                  </div>
+                {/each}
+              {/if}
             </div>
           {/if}
         </div>
@@ -597,6 +663,7 @@
           <span>別案「<strong>{currentPlan.name}</strong>」で作業中です。本案には影響しません。</span>
           <span class="banner-actions">
             <button type="button" onclick={openAdopt}>本案に採用…</button>
+            <button type="button" title="消えません。あとで開き直せます" onclick={() => currentPlan && switchThenArchive(currentPlan)}>この案をしまう</button>
             {#if primaryPlan}<button type="button" onclick={() => switchTo(primaryPlan)}>本案に戻る</button>{/if}
           </span>
         </div>
@@ -661,6 +728,20 @@
       <button type="submit" class="primary" disabled={newPlanName.trim() === ""}>作る</button>
     </div>
     </form>
+  </div>
+{/if}
+
+{#if introOpen}
+  <button type="button" class="backdrop" aria-label="閉じる" tabindex="-1" onclick={() => (introOpen = false)}></button>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="intro-title">
+    <h3 id="intro-title">別案ってなに?</h3>
+    <ul class="intro">
+      <li>いまのファイルを<strong>そのまま残して</strong>、別のやり方を試せます。</li>
+      <li>別案で変えても<strong>本案は変わりません</strong>。ツールバーの「案」でいつでも行き来できます。</li>
+      <li>気に入ったら「本案に採用」。やめるときは「しまう」(消えません)。</li>
+    </ul>
+    <p class="intro-fig" aria-hidden="true">本案 ●────●────●<br />　　　　 ╲<br />別案 　　 ●────●　→ 気に入ったら本案へ</p>
+    <div class="actions"><button type="button" class="primary" onclick={() => (introOpen = false)}>わかった</button></div>
   </div>
 {/if}
 
@@ -990,6 +1071,43 @@
     color: var(--text);
     background: color-mix(in srgb, var(--plan) 16%, var(--bg));
     border-bottom: 2px solid var(--plan);
+  }
+  .menu-label {
+    padding: 4px 8px 2px;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .menu-item.archived {
+    cursor: default;
+  }
+  .menu-item.archived:hover {
+    background: none;
+  }
+  .link {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: var(--accent);
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+  }
+  .intro {
+    margin: 0;
+    padding-left: 18px;
+    font-size: 13px;
+    line-height: 1.7;
+  }
+  .intro-fig {
+    margin: 4px 0;
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+    line-height: 1.4;
+  }
+  .modal > .actions {
+    display: flex;
+    justify-content: flex-end;
   }
   .banner-actions {
     display: flex;

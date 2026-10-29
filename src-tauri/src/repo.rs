@@ -21,6 +21,9 @@ const PRIMARY_KEY: &str = "giter.primary";
 /// 本案の表示名。
 const PRIMARY_NAME: &str = "本案";
 
+/// しまった案を置く場所。ブランチではないので一覧に出ないが、保存(コミット)は残る。
+const ARCHIVE_PREFIX: &str = "refs/giter/archived/";
+
 /// これを超えるファイルは、保存前に警告する(GitHub が push を拒否する上限と同じ)。
 pub const LARGE_FILE_BYTES: u64 = 100_000_000;
 
@@ -74,6 +77,8 @@ pub struct Plan {
     pub is_current: bool,
     /// 本案(最初の案)
     pub is_primary: bool,
+    /// しまってある案(一覧には出さず、「しまった案」から開き直す)
+    pub is_archived: bool,
     /// 最後に保存した時刻(UNIX 秒)
     pub time: i64,
 }
@@ -262,7 +267,14 @@ pub fn plans(repo: &Repository) -> Result<Vec<Plan>> {
         } else {
             config.get_string(&description_key(&id)).unwrap_or_else(|_| id.clone())
         };
-        out.push(Plan { is_current: id == current, is_primary, name, id, time });
+        out.push(Plan { is_current: id == current, is_primary, is_archived: false, name, id, time });
+    }
+    for reference in repo.references_glob(&format!("{ARCHIVE_PREFIX}*"))? {
+        let reference = reference?;
+        let Some(id) = reference.name().and_then(|n| n.strip_prefix(ARCHIVE_PREFIX)).map(str::to_string) else { continue };
+        let time = reference.peel_to_commit().map(|c| c.time().seconds()).unwrap_or(0);
+        let name = config.get_string(&description_key(&id)).unwrap_or_else(|_| id.clone());
+        out.push(Plan { is_current: false, is_primary: false, is_archived: true, name, id, time });
     }
     out.sort_by(|a, b| b.is_primary.cmp(&a.is_primary).then_with(|| b.time.cmp(&a.time)));
     Ok(out)
@@ -296,14 +308,45 @@ pub fn create_plan(repo: &Repository, name: &str) -> Result<String> {
     if !Reference::is_valid_name(&format!("refs/heads/{id}")) {
         return Err(Error("この名前は使えません。別の名前にしてください".into()));
     }
-    if repo.find_branch(&id, BranchType::Local).is_ok() {
-        return Err(Error("同じ名前の案がすでにあります".into()));
+    if repo.find_branch(&id, BranchType::Local).is_ok()
+        || repo.find_reference(&format!("{ARCHIVE_PREFIX}{id}")).is_ok()
+    {
+        return Err(Error("同じ名前の案がすでにあります(しまった案にもあります)".into()));
     }
     let head = head_commit(repo).ok_or_else(|| Error("先に一度保存してください".into()))?;
     repo.branch(&id, &head, false)?;
     repo.config()?.set_str(&description_key(&id), display)?;
     repo.set_head(&format!("refs/heads/{id}"))?;
     Ok(id)
+}
+
+/// 案をしまう。消さずに、保存はすべて残したまま一覧から外す。本案と、いま開いている案はしまえない。
+pub fn archive_plan(repo: &Repository, id: &str) -> Result<()> {
+    if id == primary_plan_id(repo)? {
+        return Err(Error("本案はしまえません".into()));
+    }
+    if id == current_plan_id(repo)? {
+        return Err(Error("いま開いている案はしまえません。先に別の案に切り替えてください".into()));
+    }
+    let oid = plan_commit(repo, id)?.id();
+    let archived = format!("{ARCHIVE_PREFIX}{id}");
+    repo.reference(&archived, oid, true, "案をしまう")?;
+    repo.find_branch(id, BranchType::Local)?.delete()?;
+    Ok(())
+}
+
+/// しまった案を、一覧に戻す(切り替えはしない)。
+pub fn reopen_plan(repo: &Repository, id: &str) -> Result<()> {
+    if repo.find_branch(id, BranchType::Local).is_ok() {
+        return Err(Error("同じ名前の案がすでにあります".into()));
+    }
+    let archived = repo
+        .find_reference(&format!("{ARCHIVE_PREFIX}{id}"))
+        .map_err(|_| Error(format!("しまった案が見つかりません: {id}")))?;
+    let commit = archived.peel_to_commit()?;
+    repo.branch(id, &commit, false)?;
+    repo.find_reference(&format!("{ARCHIVE_PREFIX}{id}"))?.delete()?;
+    Ok(())
 }
 
 /// 別の案に切り替える。フォルダの中身がその案の状態に入れ替わるので、未保存の変更があるときは拒否する。
@@ -1218,6 +1261,55 @@ mod tests {
         write(&d, "a.txt", "3");
         assert!(adopt_plan(&repo, &id, &HashMap::new()).is_err());
         assert_eq!(fs::read_to_string(d.path().join("a.txt")).unwrap(), "3");
+    }
+
+    #[test]
+    fn archiving_hides_the_plan_but_keeps_its_saves_and_it_can_be_reopened() {
+        let (d, repo) = setup();
+        write(&d, "a.txt", "1");
+        save(&repo, "v1").unwrap();
+        let id = create_plan(&repo, "古い案").unwrap();
+        write(&d, "a.txt", "2");
+        save(&repo, "案の作業").unwrap();
+        let tip_before = tip(&repo, &id);
+        switch_plan(&repo, "main").unwrap();
+
+        archive_plan(&repo, &id).unwrap();
+        let list = plans(&repo).unwrap();
+        let archived: Vec<_> = list.iter().filter(|p| p.is_archived).collect();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].name, "古い案");
+        assert!(repo.find_branch(&id, BranchType::Local).is_err());
+        assert!(switch_plan(&repo, &id).is_err(), "しまった案には切り替えられない");
+
+        reopen_plan(&repo, &id).unwrap();
+        assert!(plans(&repo).unwrap().iter().all(|p| !p.is_archived));
+        assert_eq!(tip(&repo, &id), tip_before, "保存は残っている");
+        switch_plan(&repo, &id).unwrap();
+        assert_eq!(fs::read_to_string(d.path().join("a.txt")).unwrap(), "2");
+    }
+
+    #[test]
+    fn primary_and_current_plans_cannot_be_archived() {
+        let (d, repo) = setup();
+        write(&d, "a.txt", "1");
+        save(&repo, "v1").unwrap();
+        let id = create_plan(&repo, "案").unwrap();
+        assert!(archive_plan(&repo, &id).is_err(), "いま開いている案");
+        assert!(archive_plan(&repo, "main").is_err(), "本案");
+        assert!(archive_plan(&repo, "ない案").is_err());
+    }
+
+    #[test]
+    fn an_archived_name_cannot_be_reused() {
+        let (d, repo) = setup();
+        write(&d, "a.txt", "1");
+        save(&repo, "v1").unwrap();
+        let id = create_plan(&repo, "案").unwrap();
+        switch_plan(&repo, "main").unwrap();
+        archive_plan(&repo, &id).unwrap();
+        assert!(create_plan(&repo, "案").is_err());
+        assert!(reopen_plan(&repo, "ない案").is_err());
     }
 
     #[test]

@@ -51,6 +51,18 @@ fn switch_plan(root: String, id: String) -> Result<()> {
     repo::switch_plan(&repo::open_or_init(&PathBuf::from(root))?, &id)
 }
 
+/// 案をしまう(消さずに一覧から外す)。
+#[tauri::command(async)]
+fn archive_plan(root: String, id: String) -> Result<()> {
+    repo::archive_plan(&repo::open_or_init(&PathBuf::from(root))?, &id)
+}
+
+/// しまった案を一覧に戻す。
+#[tauri::command(async)]
+fn reopen_plan(root: String, id: String) -> Result<()> {
+    repo::reopen_plan(&repo::open_or_init(&PathBuf::from(root))?, &id)
+}
+
 /// 別案を本案に採用すると、どのファイルが変わるか。
 #[tauri::command(async)]
 fn plan_changes(root: String, id: String) -> Result<Vec<PlanChange>> {
@@ -141,6 +153,8 @@ pub fn run() {
             list_plans,
             create_plan,
             switch_plan,
+            archive_plan,
+            reopen_plan,
             plan_changes,
             adopt_plan,
             pending_large,
