@@ -370,7 +370,7 @@ pub fn export_version(repo: &Repository, id: &str, rel: &str) -> Result<PathBuf>
         .find_blob(entry.id())
         .map_err(|_| Error("フォルダは書き出せません。ファイルを選んでください".into()))?;
     let name = Path::new(rel).file_name().ok_or_else(|| Error("ファイル名が不正です".into()))?;
-    let dir = std::env::temp_dir().join("giter-export").join(&id[..8.min(id.len())]);
+    let dir = export_dir().join(&id[..8.min(id.len())]);
     fs::create_dir_all(&dir)?;
     let out = dir.join(name);
     fs::write(&out, blob.content())?;
@@ -408,7 +408,24 @@ fn copy_recursive(src: &Path, dest: &Path) -> io::Result<()> {
     }
 }
 
+/// 過去の版をドラッグ取り出し用に書き出す一時フォルダ。
+fn export_dir() -> PathBuf {
+    std::env::temp_dir().join("giter-export")
+}
+
+/// ドロップされたパスが、アプリ自身が出したドラッグ(=コピーしてはいけないもの)か。
+/// ウィンドウ内でファイルをドラッグしてドロップしても、OS からは外部のドロップと区別できない。
+/// - 管理フォルダの中: 同じフォルダ内の移動の操作であり、コピーすると重複する
+/// - 管理フォルダを含む親: コピー先が自分自身の中になり、増え続ける
+/// - 過去の版の書き出し先: 取り出し用の一時ファイルで、追加するものではない
+fn is_own_drag(src: &Path, root: &Path) -> bool {
+    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let (src, root, export) = (canon(src), canon(root), canon(&export_dir()));
+    src.starts_with(&root) || root.starts_with(&src) || src.starts_with(&export)
+}
+
 /// 外部のファイル/フォルダを管理フォルダ内の `dest_rel` にコピーして追加する。元は残す。
+/// アプリ自身が出したドラッグ(管理フォルダ内のファイルなど)は無視する。追加した項目のパスを返す。
 pub fn add_files(repo: &Repository, dest_rel: &str, sources: &[PathBuf]) -> Result<Vec<String>> {
     let root = workdir(repo)?;
     let dest_dir = safe_join(root, dest_rel)?;
@@ -416,7 +433,7 @@ pub fn add_files(repo: &Repository, dest_rel: &str, sources: &[PathBuf]) -> Resu
         return Err(Error(format!("追加先のフォルダがありません: {dest_rel}")));
     }
     let mut added = Vec::new();
-    for src in sources {
+    for src in sources.iter().filter(|s| !is_own_drag(s, root)) {
         let name = src.file_name().ok_or_else(|| Error(format!("名前を取得できません: {}", src.display())))?;
         let dest = unique_dest(&dest_dir, name);
         copy_recursive(src, &dest)?;
@@ -680,6 +697,50 @@ mod tests {
         write(&d, "data.bin", &"z".repeat(5000));
         save(&repo, "s").unwrap();
         assert!(history_size(&repo).unwrap() > before);
+    }
+
+    #[test]
+    fn dropping_a_managed_file_back_into_the_window_is_ignored() {
+        let (d, repo) = setup();
+        write(&d, "doc.txt", "x");
+        write(&d, "sub/inner.txt", "y");
+        // 管理フォルダ内のファイル/フォルダをドロップ(ファイル一覧内のドラッグ&ドロップ)
+        let added = add_files(&repo, "", &[d.path().join("doc.txt"), d.path().join("sub")]).unwrap();
+        assert!(added.is_empty(), "{added:?}");
+        assert!(!d.path().join("doc 2.txt").exists());
+        assert!(!d.path().join("sub 2").exists());
+        // 別のフォルダへドロップしても、コピーしない
+        let added = add_files(&repo, "sub", &[d.path().join("doc.txt")]).unwrap();
+        assert!(added.is_empty());
+        assert!(!d.path().join("sub/doc.txt").exists());
+    }
+
+    #[test]
+    fn dropping_the_managed_folder_or_its_parent_is_ignored() {
+        let (d, repo) = setup();
+        let parent = d.path().parent().unwrap().to_path_buf();
+        let added = add_files(&repo, "", &[d.path().to_path_buf(), parent]).unwrap();
+        assert!(added.is_empty(), "{added:?}");
+    }
+
+    #[test]
+    fn dropping_an_exported_version_is_ignored() {
+        let (d, repo) = setup();
+        write(&d, "a.txt", "old");
+        let old = save(&repo, "old").unwrap().unwrap();
+        let exported = export_version(&repo, &old, "a.txt").unwrap();
+        assert!(add_files(&repo, "", &[exported]).unwrap().is_empty());
+        assert!(!d.path().join("a 2.txt").exists());
+    }
+
+    #[test]
+    fn external_files_are_still_added_alongside_ignored_ones() {
+        let (d, repo) = setup();
+        write(&d, "own.txt", "x");
+        let ext = TempDir::new().unwrap();
+        fs::write(ext.path().join("outside.txt"), "y").unwrap();
+        let added = add_files(&repo, "", &[d.path().join("own.txt"), ext.path().join("outside.txt")]).unwrap();
+        assert_eq!(added, ["outside.txt"]);
     }
 
     #[test]
