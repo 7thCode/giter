@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use std::collections::HashMap;
-use repo::{Entry, Error, LargeFile, Plan, PlanChange, Resolution, Result, Version};
+use repo::{Entry, Error, LargeFile, Plan, PlanChange, PlanLoss, Resolution, Result, Version};
 use tauri::{AppHandle, State};
 
 #[derive(Default)]
@@ -51,16 +51,28 @@ fn switch_plan(root: String, id: String) -> Result<()> {
     repo::switch_plan(&repo::open_or_init(&PathBuf::from(root))?, &id)
 }
 
-/// 案をしまう(消さずに一覧から外す)。
+/// 案をごみ箱に入れる(保存は残したまま一覧から外す)。
 #[tauri::command(async)]
-fn archive_plan(root: String, id: String) -> Result<()> {
-    repo::archive_plan(&repo::open_or_init(&PathBuf::from(root))?, &id)
+fn trash_plan(root: String, id: String) -> Result<()> {
+    repo::trash_plan(&repo::open_or_init(&PathBuf::from(root))?, &id)
 }
 
-/// しまった案を一覧に戻す。
+/// その案を失ったとき、本案に残らない保存の数。
 #[tauri::command(async)]
-fn reopen_plan(root: String, id: String) -> Result<()> {
-    repo::reopen_plan(&repo::open_or_init(&PathBuf::from(root))?, &id)
+fn plan_loss(root: String, id: String) -> Result<PlanLoss> {
+    repo::plan_loss(&repo::open_or_init(&PathBuf::from(root))?, &id)
+}
+
+/// ごみ箱を空にする(`id` があればその案だけ)。空にした数を返す。
+#[tauri::command(async)]
+fn empty_trash(root: String, id: Option<String>) -> Result<usize> {
+    repo::empty_trash(&repo::open_or_init(&PathBuf::from(root))?, id.as_deref())
+}
+
+/// ごみ箱の案を一覧に戻す。
+#[tauri::command(async)]
+fn restore_plan(root: String, id: String) -> Result<()> {
+    repo::restore_plan(&repo::open_or_init(&PathBuf::from(root))?, &id)
 }
 
 /// 別案を本案に採用すると、どのファイルが変わるか。
@@ -153,8 +165,10 @@ pub fn run() {
             list_plans,
             create_plan,
             switch_plan,
-            archive_plan,
-            reopen_plan,
+            trash_plan,
+            restore_plan,
+            plan_loss,
+            empty_trash,
             plan_changes,
             adopt_plan,
             pending_large,

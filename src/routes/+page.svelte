@@ -5,7 +5,7 @@
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { ask, open } from "@tauri-apps/plugin-dialog";
   import { startDrag } from "@crabnebula/tauri-plugin-drag";
-  import { api, errorMessage, type Entry, type LargeFile, type Plan, type PlanChange, type Resolution, type Version } from "$lib/api";
+  import { api, errorMessage, type Entry, type LargeFile, type Plan, type PlanChange, type PlanLoss, type Resolution, type Version } from "$lib/api";
   import { baseName, breadcrumbs, formatSize, formatTime, parentOf, planColor } from "$lib/format";
   import FileList from "$lib/FileList.svelte";
   import HistoryPane from "$lib/HistoryPane.svelte";
@@ -39,8 +39,8 @@
   const KIND_LABEL = { added: "追加", modified: "変更", deleted: "削除" } as const;
   const adoptReady = $derived(adoptChanges.every((c) => !c.conflict || choices[c.path]));
 
-  const activePlans = $derived(plans.filter((p) => !p.is_archived));
-  const archivedPlans = $derived(plans.filter((p) => p.is_archived));
+  const activePlans = $derived(plans.filter((p) => !p.is_trashed));
+  const trashedPlans = $derived(plans.filter((p) => p.is_trashed));
   const currentPlan = $derived(plans.find((p) => p.is_current) ?? null);
   const primaryPlan = $derived(plans.find((p) => p.is_primary) ?? null);
 
@@ -54,10 +54,13 @@
   const crumbs = $derived(breadcrumbs(cwd));
 
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
-  function say(message: string) {
+  /** 通知に付ける操作(「元に戻す」など) */
+  let noticeAction = $state<{ label: string; run: () => void } | null>(null);
+  function say(message: string, action: { label: string; run: () => void } | null = null) {
     notice = message;
+    noticeAction = action;
     clearTimeout(noticeTimer);
-    noticeTimer = setTimeout(() => (notice = ""), 4000);
+    noticeTimer = setTimeout(() => (notice = ""), action ? 9000 : 4000);
   }
 
   function remember() {
@@ -296,31 +299,60 @@
     }
   }
 
-  /** 案をしまう。消えるわけではなく、「しまった案」からいつでも開き直せる */
-  async function archive(plan: Plan) {
+  function lossText(loss: PlanLoss): string {
+    return loss.adopted
+      ? "本案に採用済みなので、失うものはありません。"
+      : `本案にまだ採用していない保存が ${loss.unique_saves} 件あります。`;
+  }
+
+  /** 案をごみ箱に入れる。保存は残るので、ごみ箱から元に戻せる(空にするまで) */
+  async function trash(plan: Plan) {
     if (!root) return;
-    const ok = await ask(`「${plan.name}」をしまいます。\n消えません。案メニューの「しまった案」から、いつでも開き直せます。`, {
-      title: "この案をしまいますか?",
-      okLabel: "しまう",
-      cancelLabel: "やめる",
-    });
-    if (!ok) return;
     try {
-      await api.archivePlan(root, plan.id);
+      const loss = await api.planLoss(root, plan.id);
+      const ok = await ask(`「${plan.name}」をごみ箱に入れます。\n${lossText(loss)}\nごみ箱から「元に戻す」で戻せます。`, {
+        title: "この案をごみ箱に入れますか?",
+        kind: loss.adopted ? "info" : "warning",
+        okLabel: "ごみ箱に入れる",
+        cancelLabel: "やめる",
+      });
+      if (!ok) return;
+      await api.trashPlan(root, plan.id);
       await loadPlans(root);
-      say(`「${plan.name}」をしまいました`);
+      say(`「${plan.name}」をごみ箱に入れました`, { label: "元に戻す", run: () => void restoreFromTrash(plan, false) });
     } catch (e) {
       say(errorMessage(e));
     }
   }
 
-  async function reopen(plan: Plan) {
-    planMenuOpen = false;
+  async function restoreFromTrash(plan: Plan, closeMenu = true) {
+    if (closeMenu) planMenuOpen = false;
     if (!root) return;
     try {
-      await api.reopenPlan(root, plan.id);
+      await api.restorePlan(root, plan.id);
       await loadPlans(root);
-      say(`「${plan.name}」を開き直せるようにしました`);
+      say(`「${plan.name}」を元に戻しました`);
+    } catch (e) {
+      say(errorMessage(e));
+    }
+  }
+
+  /** ごみ箱を空にする。ここから先はアプリでは戻せない */
+  async function emptyTrash() {
+    if (!root || trashedPlans.length === 0) return;
+    planMenuOpen = false;
+    try {
+      const losses = await Promise.all(trashedPlans.map((p) => api.planLoss(root!, p.id)));
+      const saves = losses.reduce((sum, l) => sum + l.unique_saves, 0);
+      const detail = saves === 0 ? "どの案も本案に採用済みなので、失うものはありません。" : `本案に採用していない保存が合計 ${saves} 件あり、戻せなくなります。`;
+      const ok = await ask(
+        `ごみ箱の ${trashedPlans.length} 件の案を空にします。\n${detail}\n空にすると元に戻せません。\n※ 履歴のサイズは、すぐには減りません。`,
+        { title: "ごみ箱を空にしますか?", kind: "warning", okLabel: "空にする", cancelLabel: "やめる" },
+      );
+      if (!ok) return;
+      await api.emptyTrash(root, null);
+      await loadPlans(root);
+      say("ごみ箱を空にしました");
     } catch (e) {
       say(errorMessage(e));
     }
@@ -370,11 +402,11 @@
     }
   }
 
-  /** いま開いている案はしまえないので、本案に戻ってからしまう */
-  async function switchThenArchive(plan: Plan) {
+  /** いま開いている案はごみ箱に入れられないので、本案に戻ってから入れる */
+  async function switchThenTrash(plan: Plan) {
     if (!primaryPlan) return;
     await switchTo(primaryPlan);
-    if (currentPlan?.is_primary) await archive(plan);
+    if (currentPlan?.is_primary) await trash(plan);
   }
 
   function openCreate() {
@@ -594,15 +626,16 @@
               {/each}
               <hr />
               <button type="button" role="menuitem" class="menu-item" onclick={openCreate}>＋ 別案を作る…</button>
-              {#if archivedPlans.length > 0}
+              {#if trashedPlans.length > 0}
                 <hr />
-                <div class="menu-label">しまった案</div>
-                {#each archivedPlans as plan (plan.id)}
-                  <div class="menu-item archived">
+                <div class="menu-label">ごみ箱</div>
+                {#each trashedPlans as plan (plan.id)}
+                  <div class="menu-item trashed">
                     <span class="menu-name">{plan.name}</span>
-                    <button type="button" class="link" onclick={() => reopen(plan)}>開き直す</button>
+                    <button type="button" class="link" onclick={() => restoreFromTrash(plan)}>元に戻す</button>
                   </div>
                 {/each}
+                <button type="button" role="menuitem" class="menu-item" onclick={emptyTrash}>ごみ箱を空にする…</button>
               {/if}
             </div>
           {/if}
@@ -663,7 +696,7 @@
           <span>別案「<strong>{currentPlan.name}</strong>」で作業中です。本案には影響しません。</span>
           <span class="banner-actions">
             <button type="button" onclick={openAdopt}>本案に採用…</button>
-            <button type="button" title="消えません。あとで開き直せます" onclick={() => currentPlan && switchThenArchive(currentPlan)}>この案をしまう</button>
+            <button type="button" title="ごみ箱から元に戻せます" onclick={() => currentPlan && switchThenTrash(currentPlan)}>ごみ箱に入れる</button>
             {#if primaryPlan}<button type="button" onclick={() => switchTo(primaryPlan)}>本案に戻る</button>{/if}
           </span>
         </div>
@@ -738,7 +771,7 @@
     <ul class="intro">
       <li>いまのファイルを<strong>そのまま残して</strong>、別のやり方を試せます。</li>
       <li>別案で変えても<strong>本案は変わりません</strong>。ツールバーの「案」でいつでも行き来できます。</li>
-      <li>気に入ったら「本案に採用」。やめるときは「しまう」(消えません)。</li>
+      <li>気に入ったら「本案に採用」。やめるときは「ごみ箱に入れる」(あとで元に戻せます)。</li>
     </ul>
     <p class="intro-fig" aria-hidden="true">本案 ●────●────●<br />　　　　 ╲<br />別案 　　 ●────●　→ 気に入ったら本案へ</p>
     <div class="actions"><button type="button" class="primary" onclick={() => (introOpen = false)}>わかった</button></div>
@@ -784,7 +817,12 @@
 {/if}
 
 {#if notice}
-  <div class="toast" role="status">{notice}</div>
+  <div class="toast" role="status">
+    {notice}
+    {#if noticeAction}
+      <button type="button" class="link toast-action" onclick={() => { const run = noticeAction?.run; notice = ""; run?.(); }}>{noticeAction.label}</button>
+    {/if}
+  </div>
 {/if}
 
 <style>
@@ -1077,11 +1115,16 @@
     font-size: 11px;
     color: var(--text-dim);
   }
-  .menu-item.archived {
+  .menu-item.trashed {
     cursor: default;
   }
-  .menu-item.archived:hover {
+  .menu-item.trashed:hover {
     background: none;
+  }
+  .toast-action {
+    margin-left: 10px;
+    color: inherit;
+    text-decoration: underline;
   }
   .link {
     background: none;
