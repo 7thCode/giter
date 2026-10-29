@@ -32,6 +32,7 @@
   let createOpen = $state(false);
   let newPlanName = $state("");
   let createError = $state("");
+  let trashOpen = $state(false);
   let adoptOpen = $state(false);
   let adoptChanges = $state<PlanChange[]>([]);
   let choices = $state<Record<string, Resolution>>({});
@@ -319,14 +320,13 @@
       if (!ok) return;
       await api.trashPlan(root, plan.id);
       await loadPlans(root);
-      say(`「${plan.name}」をごみ箱に入れました`, { label: "元に戻す", run: () => void restoreFromTrash(plan, false) });
+      say(`「${plan.name}」をごみ箱に入れました`, { label: "元に戻す", run: () => void restoreFromTrash(plan) });
     } catch (e) {
       say(errorMessage(e));
     }
   }
 
-  async function restoreFromTrash(plan: Plan, closeMenu = true) {
-    if (closeMenu) planMenuOpen = false;
+  async function restoreFromTrash(plan: Plan) {
     if (!root) return;
     try {
       await api.restorePlan(root, plan.id);
@@ -337,10 +337,30 @@
     }
   }
 
+  /** ごみ箱の案を1つだけ、完全に削除する。アプリでは戻せなくなる */
+  async function deleteForever(plan: Plan) {
+    if (!root) return;
+    try {
+      const loss = await api.planLoss(root, plan.id);
+      const detail = loss.adopted ? "本案に採用済みなので、失うものはありません。" : `本案に採用していない保存 ${loss.unique_saves} 件が、戻せなくなります。`;
+      const ok = await ask(`「${plan.name}」を完全に削除します。\n${detail}\n元に戻せません。\n※ 履歴のサイズは、すぐには減りません。`, {
+        title: "完全に削除しますか?",
+        kind: "warning",
+        okLabel: "完全に削除",
+        cancelLabel: "やめる",
+      });
+      if (!ok) return;
+      await api.emptyTrash(root, plan.id);
+      await loadPlans(root);
+      say(`「${plan.name}」を完全に削除しました`);
+    } catch (e) {
+      say(errorMessage(e));
+    }
+  }
+
   /** ごみ箱を空にする。ここから先はアプリでは戻せない */
   async function emptyTrash() {
     if (!root || trashedPlans.length === 0) return;
-    planMenuOpen = false;
     try {
       const losses = await Promise.all(trashedPlans.map((p) => api.planLoss(root!, p.id)));
       const saves = losses.reduce((sum, l) => sum + l.unique_saves, 0);
@@ -478,6 +498,7 @@
       createOpen = false;
       adoptOpen = false;
       introOpen = false;
+      trashOpen = false;
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
       event.preventDefault();
@@ -573,10 +594,10 @@
           </button>
           <button type="button" class="remove" aria-label="{baseName(dir)} を一覧から外す" title="一覧から外す(ファイルは消えません)" onclick={() => removeRoot(dir)}>×</button>
         </li>
-        {#if dir === root && activePlans.length > 1}
+        {#if dir === root}
           <li class="plans-wrap">
             <ul class="plans" aria-label="案">
-              {#each activePlans as plan (plan.id)}
+              {#each activePlans.length > 1 ? activePlans : [] as plan (plan.id)}
                 <li>
                   <button type="button" class="plan-item" class:current={plan.is_current} aria-current={plan.is_current} onclick={() => switchTo(plan)}>
                     <i class="dot" style:--plan={planColor(plan.id, plan.is_primary)}></i>
@@ -584,6 +605,12 @@
                   </button>
                 </li>
               {/each}
+              <li>
+                <button type="button" class="plan-item trash-row" title="ごみ箱に入れた案を見る・元に戻す" onclick={() => (trashOpen = true)}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M6 6l1 14h10l1-14" /></svg>
+                  <span>ごみ箱{trashedPlans.length > 0 ? `(${trashedPlans.length})` : ""}</span>
+                </button>
+              </li>
             </ul>
           </li>
         {/if}
@@ -627,15 +654,7 @@
               <hr />
               <button type="button" role="menuitem" class="menu-item" onclick={openCreate}>＋ 別案を作る…</button>
               {#if trashedPlans.length > 0}
-                <hr />
-                <div class="menu-label">ごみ箱</div>
-                {#each trashedPlans as plan (plan.id)}
-                  <div class="menu-item trashed">
-                    <span class="menu-name">{plan.name}</span>
-                    <button type="button" class="link" onclick={() => restoreFromTrash(plan)}>元に戻す</button>
-                  </div>
-                {/each}
-                <button type="button" role="menuitem" class="menu-item" onclick={emptyTrash}>ごみ箱を空にする…</button>
+                <button type="button" role="menuitem" class="menu-item" onclick={() => { planMenuOpen = false; trashOpen = true; }}>ごみ箱を見る({trashedPlans.length})</button>
               {/if}
             </div>
           {/if}
@@ -761,6 +780,32 @@
       <button type="submit" class="primary" disabled={newPlanName.trim() === ""}>作る</button>
     </div>
     </form>
+  </div>
+{/if}
+
+{#if trashOpen}
+  <button type="button" class="backdrop" aria-label="閉じる" tabindex="-1" onclick={() => (trashOpen = false)}></button>
+  <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="trash-title">
+    <h3 id="trash-title">ごみ箱</h3>
+    {#if trashedPlans.length === 0}
+      <p class="note">ごみ箱は空です。</p>
+    {:else}
+      <p class="note">ごみ箱の案は、「元に戻す」で戻せます。空にする(または完全に削除する)と、アプリからは戻せません。</p>
+      <ul class="changes">
+        {#each trashedPlans as plan (plan.id)}
+          <li>
+            <i class="dot" style:--plan={planColor(plan.id, false)}></i>
+            <span class="cpath" title={plan.name}>{plan.name}</span>
+            <button type="button" class="link" onclick={() => restoreFromTrash(plan)}>元に戻す</button>
+            <button type="button" class="link danger" onclick={() => deleteForever(plan)}>完全に削除</button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+    <div class="actions">
+      {#if trashedPlans.length > 0}<button type="button" onclick={emptyTrash}>ごみ箱を空にする…</button>{/if}
+      <button type="button" class="primary" onclick={() => (trashOpen = false)}>閉じる</button>
+    </div>
   </div>
 {/if}
 
@@ -1121,6 +1166,12 @@
   .menu-item.trashed:hover {
     background: none;
   }
+  .link.danger {
+    color: #dc2626;
+  }
+  .trash-row {
+    color: var(--text-dim);
+  }
   .toast-action {
     margin-left: 10px;
     color: inherit;
@@ -1151,6 +1202,7 @@
   .modal > .actions {
     display: flex;
     justify-content: flex-end;
+    gap: 8px;
   }
   .banner-actions {
     display: flex;
